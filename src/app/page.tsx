@@ -53,7 +53,7 @@ export default function Home() {
             <h1 className="text-xl font-bold tracking-tight">Interactive DCF Model</h1>
           </div>
           <div className="text-sm font-medium text-slate-500 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full">
-            Acme SaaS Corp
+            Akhtar
           </div>
         </div>
       </header>
