@@ -4,6 +4,7 @@ import React, { useState, useMemo } from 'react';
 import { Assumptions, ValuationOutput } from '../types/finance';
 import { runDCFModel } from '../lib/financeEngine';
 import { AssumptionSlider } from '../components/AssumptionSlider';
+import { AssumptionInput } from '../components/AssumptionInput';
 import { FinancialTable } from '../components/FinancialTable';
 import { ValuationDashboard } from '../components/ValuationDashboard';
 
@@ -64,6 +65,33 @@ export default function Home() {
           {/* LEFT SIDEBAR: Drivers & Assumptions */}
           <div className="xl:col-span-1 space-y-6 lg:sticky lg:top-24">
             
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+              <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                <span className="w-2 h-6 rounded bg-indigo-500 inline-block"></span>
+                Base Metrics
+              </h2>
+              <div className="space-y-4">
+                <AssumptionInput
+                  label="Year 0 Revenue"
+                  format="currency"
+                  value={assumptions.year0Revenue}
+                  onChange={(v) => handleAssumptionChange('year0Revenue', v)}
+                />
+                <AssumptionInput
+                  label="Net Debt"
+                  description="Total Debt minus Cash"
+                  format="currency"
+                  value={assumptions.netDebt}
+                  onChange={(v) => handleAssumptionChange('netDebt', v)}
+                />
+                <AssumptionInput
+                  label="Shares Outstanding"
+                  value={assumptions.sharesOutstanding}
+                  onChange={(v) => handleAssumptionChange('sharesOutstanding', v)}
+                />
+              </div>
+            </div>
+
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
               <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
                 <span className="w-2 h-6 rounded bg-blue-500 inline-block"></span>
