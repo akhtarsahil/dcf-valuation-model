@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────
+# DCF Valuation Model — Python Dependencies
+# ─────────────────────────────────────────────
+
+# Core data & computation
+pandas>=2.0
+numpy>=1.24
+
+# Live market data
+yfinance>=0.2.31
+
+# Interactive dashboard
+streamlit>=1.35
+plotly>=5.18
+
+# PDF report generation
+reportlab>=4.0
+
+# Supporting libraries
+openpyxl>=3.1              # Excel export support
+tabulate>=0.9              # Pretty-printed terminal tables
+pyyaml>=6.0                # YAML config file parsing
+requests>=2.31             # HTTP client (yfinance dependency)
+matplotlib>=3.7            # Chart generation

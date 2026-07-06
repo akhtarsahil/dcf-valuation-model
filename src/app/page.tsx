@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Assumptions, ValuationOutput } from '../types/finance';
+import { Assumptions } from '../types/finance';
 import { runDCFModel } from '../lib/financeEngine';
 import { AssumptionSlider } from '../components/AssumptionSlider';
 import { AssumptionInput } from '../components/AssumptionInput';
 import { FinancialTable } from '../components/FinancialTable';
 import { ValuationDashboard } from '../components/ValuationDashboard';
+import { ScenarioManager } from '../components/ScenarioManager';
+import { SensitivityMatrix } from '../components/SensitivityMatrix';
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
   year0Revenue: 100000,
@@ -54,7 +56,7 @@ export default function Home() {
             <h1 className="text-xl font-bold tracking-tight">Interactive DCF Model</h1>
           </div>
           <div className="text-sm font-medium text-slate-500 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full">
-            Akhtar
+            Institutional Suite
           </div>
         </div>
       </header>
@@ -169,7 +171,14 @@ export default function Home() {
 
           {/* RIGHT MAIN CONTENT: Output */}
           <div className="xl:col-span-3 space-y-8">
+            <ScenarioManager 
+              currentAssumptions={assumptions}
+              onSelectScenario={setAssumptions}
+            />
+
             <ValuationDashboard valuation={valuation} />
+
+            <SensitivityMatrix assumptions={assumptions} />
 
             <FinancialTable 
               title="Income Statement Projection"
