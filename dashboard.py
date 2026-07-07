@@ -137,6 +137,89 @@ for _key, _default in _MANUAL_DEFAULTS.items():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Industry-Standard Input Parsing Utilities
+# ──────────────────────────────────────────────────────────────────────
+# Users can type values like "14%", "$1,000,000", "2.5M", "500K",
+# "-$15,000", or plain decimals.  These functions normalize the raw
+# text into the float that the engine expects.
+
+import re as _re
+
+
+def _parse_rate(text: str) -> float:
+    """Parse a rate string into a decimal float.
+
+    Accepted formats:
+        '14%'    → 0.14
+        '14.5%'  → 0.145
+        '0.14'   → 0.14
+        '14'     → 0.14  (values > 1 are treated as percentages)
+        '-5%'    → -0.05
+    """
+    s = text.strip().replace(",", "")
+    if not s:
+        return 0.0
+    if s.endswith("%"):
+        return float(s[:-1]) / 100.0
+    val = float(s)
+    # Heuristic: if abs > 1, user almost certainly typed a percentage
+    if abs(val) > 1.0:
+        return val / 100.0
+    return val
+
+
+def _parse_currency(text: str) -> float:
+    """Parse a currency string into a raw float.
+
+    Accepted formats:
+        '$1,000,000'  → 1000000.0
+        '1,000,000'   → 1000000.0
+        '1M' / '1m'   → 1000000.0
+        '2.5B' / '2.5b' → 2500000000.0
+        '500K' / '500k' → 500000.0
+        '-$15,000'    → -15000.0
+        '15000'       → 15000.0
+    """
+    s = text.strip().replace(",", "").replace("$", "")
+    if not s:
+        return 0.0
+
+    # Detect sign
+    sign = 1.0
+    if s.startswith("-"):
+        sign = -1.0
+        s = s[1:].strip()
+    elif s.startswith("+"):
+        s = s[1:].strip()
+
+    # Detect suffix multipliers
+    multiplier = 1.0
+    if s and s[-1].upper() == "B":
+        multiplier = 1e9
+        s = s[:-1]
+    elif s and s[-1].upper() == "M":
+        multiplier = 1e6
+        s = s[:-1]
+    elif s and s[-1].upper() == "K":
+        multiplier = 1e3
+        s = s[:-1]
+
+    return sign * float(s) * multiplier
+
+
+def _fmt_rate(val: float) -> str:
+    """Format a decimal rate for display in a text input.  e.g. 0.14 → '14.00%'"""
+    return f"{val * 100:.2f}%"
+
+
+def _fmt_currency(val: float) -> str:
+    """Format a raw float for display in a text input.  e.g. 1000000 → '$1,000,000.00'"""
+    if val < 0:
+        return f"-${abs(val):,.2f}"
+    return f"${val:,.2f}"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Manual DCF Solver Callback
 # ──────────────────────────────────────────────────────────────────────
 # This function is invoked via on_click / on_change BEFORE the next
@@ -789,71 +872,110 @@ with tab_manual:
     
     # ── Row 2: Rate variables ───────────────────────────────────────────
     st.markdown("#### Rates & Targets")
+    st.caption("Type values in industry format:  `14%`  `0.14`  `$1M`  `500K`  `-$15,000`")
     r_c1, r_c2, r_c3, r_c4 = st.columns(4)
-    
+
+    def _on_wacc_text():
+        try:
+            st.session_state["manual_wacc"] = _parse_rate(st.session_state["_wacc_text"])
+        except ValueError:
+            pass
+        run_valuation_solver()
+
+    def _on_g_text():
+        try:
+            st.session_state["manual_g"] = _parse_rate(st.session_state["_g_text"])
+        except ValueError:
+            pass
+        run_valuation_solver()
+
+    def _on_tpv_text():
+        try:
+            st.session_state["manual_target_pv"] = _parse_currency(st.session_state["_tpv_text"])
+        except ValueError:
+            pass
+        run_valuation_solver()
+
+    def _on_tnpv_text():
+        try:
+            st.session_state["manual_target_npv"] = _parse_currency(st.session_state["_tnpv_text"])
+        except ValueError:
+            pass
+        run_valuation_solver()
+
     with r_c1:
-        st.number_input(
+        st.text_input(
             "WACC (Discount Rate)",
-            min_value=-0.99, max_value=1.0, step=0.005,
-            format="%.4f",
-            key="manual_wacc",
+            value=_fmt_rate(st.session_state["manual_wacc"]),
+            key="_wacc_text",
             disabled=(_solving == "manual_wacc"),
-            on_change=run_valuation_solver,
+            on_change=_on_wacc_text,
+            help="e.g. 10%, 0.10",
         )
-    
+
     with r_c2:
-        st.number_input(
+        st.text_input(
             "Perpetual Growth (g)",
-            min_value=-0.50, max_value=0.50, step=0.005,
-            format="%.4f",
-            key="manual_g",
+            value=_fmt_rate(st.session_state["manual_g"]),
+            key="_g_text",
             disabled=(_solving == "manual_g"),
-            on_change=run_valuation_solver,
+            on_change=_on_g_text,
+            help="e.g. 2.5%, 0.025",
         )
-    
+
     with r_c3:
-        st.number_input(
+        st.text_input(
             "Target PV",
-            step=10_000.0,
-            format="%.2f",
-            key="manual_target_pv",
+            value=_fmt_currency(st.session_state["manual_target_pv"]),
+            key="_tpv_text",
             disabled=(_solving == "manual_target_pv"),
-            on_change=run_valuation_solver,
+            on_change=_on_tpv_text,
         )
-    
+
     with r_c4:
-        st.number_input(
+        st.text_input(
             "Target NPV",
-            step=10_000.0,
-            format="%.2f",
-            key="manual_target_npv",
-            on_change=run_valuation_solver,
-            help="Usually 0 when solving for IRR.",
+            value=_fmt_currency(st.session_state["manual_target_npv"]),
+            key="_tnpv_text",
+            on_change=_on_tnpv_text,
+            help="Usually $0 when solving for IRR.",
         )
-    
+
     # ── Row 3: CF0 & Terminal Value ──────────────────────────────────────
     st.markdown("#### Initial Outlay & Terminal Value")
     v_c1, v_c2 = st.columns(2)
-    
+
+    def _on_cf0_text():
+        try:
+            st.session_state["manual_cf0"] = _parse_currency(st.session_state["_cf0_text"])
+        except ValueError:
+            pass
+        run_valuation_solver()
+
+    def _on_tv_text():
+        try:
+            st.session_state["manual_tv"] = _parse_currency(st.session_state["_tv_text"])
+        except ValueError:
+            pass
+        run_valuation_solver()
+
     with v_c1:
-        st.number_input(
+        st.text_input(
             "Initial Outlay (CF₀)",
-            step=10_000.0,
-            format="%.2f",
-            key="manual_cf0",
+            value=_fmt_currency(st.session_state["manual_cf0"]),
+            key="_cf0_text",
             disabled=(_solving == "manual_cf0"),
-            on_change=run_valuation_solver,
-            help="Cash outflow at t=0 (typically negative).",
+            on_change=_on_cf0_text,
+            help="e.g. -$1,000,000 or -1M",
         )
-    
+
     with v_c2:
-        st.number_input(
+        st.text_input(
             "Terminal Value (at end of period N)",
-            step=10_000.0,
-            format="%.2f",
-            key="manual_tv",
-            on_change=run_valuation_solver,
-            help="Lump-sum terminal value appended after the last period.",
+            value=_fmt_currency(st.session_state["manual_tv"]),
+            key="_tv_text",
+            on_change=_on_tv_text,
+            help="e.g. $500K, 500000, 0.5M",
         )
     
     # ── Row 4: Discrete cash flows ──────────────────────────────────────
@@ -877,19 +999,21 @@ with tab_manual:
         cols = st.columns(row_end - row_start)
         for col_idx, period_idx in enumerate(range(row_start, row_end)):
             with cols[col_idx]:
-    
+
                 def _make_cf_callback(idx: int):
                     """Factory to capture idx by value (avoids late-binding bug)."""
                     def _cb():
-                        st.session_state["manual_cfs"][idx] = st.session_state[f"_cf_input_{idx}"]
+                        try:
+                            parsed = _parse_currency(st.session_state[f"_cf_input_{idx}"])
+                            st.session_state["manual_cfs"][idx] = parsed
+                        except ValueError:
+                            pass
                         run_valuation_solver()
                     return _cb
-    
-                st.number_input(
+
+                st.text_input(
                     f"CF{period_idx + 1}",
-                    value=float(_cfs[period_idx]),
-                    step=10_000.0,
-                    format="%.2f",
+                    value=_fmt_currency(float(_cfs[period_idx])),
                     key=f"_cf_input_{period_idx}",
                     on_change=_make_cf_callback(period_idx),
                 )
