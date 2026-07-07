@@ -420,22 +420,22 @@ with st.sidebar:
 
     growth_rate = st.slider(
         "Revenue Growth Rate (Yr 1)",
-        min_value=0.0, max_value=0.40, value=0.08,
-        step=0.01, format="%.0f%%",
+        min_value=0.0, max_value=40.0, value=8.0,
+        step=1.0, format="%.0f%%",
         help="Year-1 revenue growth rate. Decays ~20% per year.",
     )
 
     wacc_val = st.slider(
         "WACC (Discount Rate)",
-        min_value=0.05, max_value=0.18, value=0.10,
-        step=0.005, format="%.1f%%",
+        min_value=5.0, max_value=18.0, value=10.0,
+        step=0.5, format="%.1f%%",
         help="Weighted average cost of capital used to discount FCFs.",
     )
 
     terminal_growth = st.slider(
         "Terminal Growth Rate",
-        min_value=0.01, max_value=0.05, value=0.025,
-        step=0.005, format="%.1f%%",
+        min_value=1.0, max_value=5.0, value=2.5,
+        step=0.1, format="%.1f%%",
         help="Perpetuity growth rate for the Gordon Growth Model.",
     )
 
@@ -490,15 +490,19 @@ with tab_live:
     else:
         data: TickerData = st.session_state["ticker_data"]
 
-        wacc_inputs = _build_wacc_inputs(data, wacc_override=wacc_val)
+        wacc_dec = wacc_val / 100.0
+        growth_dec = growth_rate / 100.0
+        tgr_dec = terminal_growth / 100.0
+
+        wacc_inputs = _build_wacc_inputs(data, wacc_override=wacc_dec)
         forecast_inputs = _build_forecast_inputs(
-            data, growth_override=growth_rate, n_years=forecast_years,
+            data, growth_override=growth_dec, n_years=forecast_years,
         )
         
         dcf_inputs = DCFInputs(
             wacc_inputs=wacc_inputs,
             forecast_inputs=forecast_inputs,
-            terminal_growth_rate=terminal_growth,
+            terminal_growth_rate=tgr_dec,
             net_debt=data.net_debt,
             shares_outstanding=data.shares_outstanding,
         )
@@ -726,7 +730,7 @@ with tab_live:
         
         st.markdown(
             f"<p style='text-align:center; color:#94A3B8; font-size:12px;'>"
-            f"Base case: WACC = {base_wacc_computed:.1%}, TGR = {terminal_growth:.1%}"
+            f"Base case: WACC = {base_wacc_computed:.1%}, TGR = {tgr_dec:.1%}"
             f"</p>",
             unsafe_allow_html=True,
         )
