@@ -22,7 +22,7 @@ This model projects 5 years of financials, checks if the cash flow rizz is real,
 - **🔥 UFCF Cash Flow Rizz** — Projects EBIT margins and tax rates to see if the company actually makes real money or if they are just yapmaxxing.
 - **💪 Dynamic WACC Mogging** — Computes dynamic cost of equity. Tells you if a company is a high-beta beta or a based, low-risk alpha.
 - **📈 Terminal Growth perpetuity check** — Gordon Growth Model calculates if the stock's terminal value will mog the GDP in perpetuity.
-- **🧠 Manual N-1 Solver [GIGACHAD Mode]** — Bypasses drivers. Enter raw cash flows and solve for the unknown stat. IRR-maxxing (WACC = `None`), target PV-maxxing (`None`), or perpetual growth solver. Uses Brent's method root-finding to avoid infinite loops.
+- **🧠 Universal N-1 Solver [GIGACHAD Mode]** — Bypasses drivers. Leave any combination of variables (WACC, Growth, Terminal Value, or PV) blank, and click solve. The engine auto-detects what's missing and back-solves everything using Gordon Growth, PV discounting, and Brent's method root-finding.
 - **🎨 Skibidi Streamlit Dashboard** — Web UI with real-time sliders, Plotly heatmaps for sensitivity matrices, and one-click PDF exports.
 - **📊 2D WACC x TGR Heatmap** — Visually maps out exactly where the stock starts mogging the current market price.
 - **🎭 Scenario preset shifts** — Toggle between **Bull** (Growth buffed, WACC debuffed), **Base** (Average run), and **Bear** (It's over, growth sliced, WACC spiked).
@@ -60,6 +60,25 @@ The ultimate playground. Manipulate sliders in real-time to watch the intrinsic 
 ```bash
 streamlit run dashboard.py
 ```
+
+Open `http://localhost:8501` in your browser. You will find two tabs:
+
+#### 📈 Tab 1: Live Ticker DCF (The Standard Mog)
+Use this tab to scrape live company financials from Yahoo Finance and run full-scale projected valuations.
+* **Scrape Live Data**: Type any ticker (e.g., `AAPL`, `NVDA`, `MSFT`) in the sidebar search bar and hit Enter. The app scrapes the income statement, balance sheet, and beta in real-time.
+* **Driver Customization**: Drag sliders to customize projected revenue growth rates, target EBIT margins, tax rates, and perpetual growth rates.
+* **Scenario Preset Shifts**: Toggle between **Bull**, **Base**, and **Bear** modes. Watch the model shift all parameters dynamically based on preset macro-conditions.
+* **Interactive Heatmaps**: Hover over the WACC x TGR sensitivity matrix. Locate the exact boundary where the stock changes from a "Buy" (value-mogging the price) to a "Sell" (over-valued cope).
+* **Download PDF Report**: Click "Download PDF Report" in the sidebar to output a fully designed, tables-included corporate valuation report.
+
+#### 🧠 Tab 2: Universal N-1 Solver (The Gigachad Auto-Solver)
+Use this tab for textbook problems, exams, or quick back-of-the-envelope calculations where you bypass yfinance drivers entirely. No dropdowns, no disabled text boxes, and zero copes.
+* **Clean Slate default**: Everything starts 100% blank when you open the solver. No default values to mess with your head.
+* **Auto-format on blur**: Simply type raw numbers in the inputs. Type `100` in a USD box and move away—it instantly formats to `$100.00`. Type `14` in WACC or Terminal Growth Rate and move away—it formats to `14.00%`. Standard abbreviations like `1M` or `500K` are fully supported too.
+* **Leave unknowns blank**: Leave whatever assumptions you don't know (such as **Terminal Value**, **Present Value (Target PV)**, **WACC (Discount Rate)**, or **Terminal Growth Rate ($g$)**) completely blank!
+* **Run Valuation**: Click **🚀 Solve Valuation (Calculate All Blank Fields)** at the bottom of the page.
+* **Auto-population**: The engine isolates the missing metrics, runs Brent's method root-finding or Gordon Growth formulas, and automatically populates the blank boxes with the computed results!
+* **Feedback Banner**: A green success card lists exactly what values were solved on their own.
 
 ### 2. Run the CLI Mode
 Query any ticker directly from Yahoo Finance and get a double-border ASCII terminal printout.
