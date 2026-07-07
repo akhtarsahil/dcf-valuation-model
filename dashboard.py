@@ -389,511 +389,515 @@ if fetch_btn or "ticker_data" not in st.session_state:
 
 if "ticker_data" not in st.session_state:
     st.markdown("## Welcome to the DCF Valuation Dashboard")
+
+# ──────────────────────────────────────────────────────────────────────
+# Tabs Layout
+# ──────────────────────────────────────────────────────────────────────
+tab_live, tab_manual = st.tabs(["🏢 Live Ticker DCF", "🧮 Manual N-1 Solver"])
+
+with tab_live:
+    if "ticker_data" not in st.session_state:
+        st.markdown("## Live Ticker DCF Valuation")
+        st.markdown(
+            "Enter a **ticker symbol** in the sidebar and click "
+            "**Fetch Live Data** to begin."
+        )
+    elif st.session_state.get("fetch_error"):
+        st.error(f"Failed to fetch data: {st.session_state['fetch_error']}")
+    else:
+        data: TickerData = st.session_state["ticker_data"]
+
+        wacc_inputs = _build_wacc_inputs(data, wacc_override=wacc_val)
+        forecast_inputs = _build_forecast_inputs(
+            data, growth_override=growth_rate, n_years=forecast_years,
+        )
+        
+        dcf_inputs = DCFInputs(
+            wacc_inputs=wacc_inputs,
+            forecast_inputs=forecast_inputs,
+            terminal_growth_rate=terminal_growth,
+            net_debt=data.net_debt,
+            shares_outstanding=data.shares_outstanding,
+        )
+        
+        try:
+            result = run_dcf(dcf_inputs)
+        except ValueError as e:
+            st.error(f"Model Error: {e}")
+            st.stop()
+        
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # Header
+        # ──────────────────────────────────────────────────────────────────────
+        
+        st.markdown(f"# {data.company_name} ({data.ticker})")
+        
+        intrinsic = result.implied_share_price
+        current = data.current_price
+        mos = (intrinsic - current) / intrinsic if intrinsic > 0 else -1.0
+        
+        if mos > 0.15:
+            badge = '<span class="badge-under">UNDERVALUED</span>'
+        elif mos > 0:
+            badge = '<span class="badge-fair">FAIRLY VALUED</span>'
+        else:
+            badge = '<span class="badge-over">OVERVALUED</span>'
+        
+        # Key metrics row
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(_metric_card(f"${intrinsic:,.2f}", "Intrinsic Value"), unsafe_allow_html=True)
+        with c2:
+            st.markdown(_metric_card(f"${current:,.2f}", "Market Price"), unsafe_allow_html=True)
+        with c3:
+            st.markdown(_metric_card(f"{mos:.1%}", "Margin of Safety"), unsafe_allow_html=True)
+        with c4:
+            st.markdown(
+                _metric_card(badge, "Recommendation"),
+                unsafe_allow_html=True,
+            )
+        
+        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # WACC & Assumptions
+        # ──────────────────────────────────────────────────────────────────────
+        
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.markdown("### WACC Breakdown")
+            w = result.wacc_result
+            wacc_data = {
+                "Component": [
+                    "Cost of Equity (CAPM)",
+                    "Cost of Debt (after-tax)",
+                    "Equity Weight",
+                    "Debt Weight",
+                    "**WACC**",
+                ],
+                "Value": [
+                    f"{w.cost_of_equity:.2%}",
+                    f"{w.cost_of_debt_aftertax:.2%}",
+                    f"{w.equity_ratio:.1%}",
+                    f"{w.debt_ratio:.1%}",
+                    f"**{w.wacc:.2%}**",
+                ],
+            }
+            st.table(wacc_data)
+        
+        with col_right:
+            st.markdown("### Forecast Assumptions")
+            fi = forecast_inputs
+            import pandas as pd
+            assumptions_df = pd.DataFrame({
+                "Year": [f"Yr {i+1}" for i in range(forecast_years)],
+                "Growth": [f"{g:.1%}" for g in fi.revenue_growth_rates],
+                "Margin": [f"{m:.1%}" for m in fi.ebit_margins],
+                "Tax": [f"{t:.1%}" for t in fi.tax_rates],
+                "CapEx %": [f"{c:.1%}" for c in fi.capex_pct_of_rev],
+            })
+            st.dataframe(assumptions_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # FCF Projections
+        # ──────────────────────────────────────────────────────────────────────
+        
+        st.markdown("### Projected Free Cash Flows")
+        
+        fcf_rows = []
+        for dy in result.discounted_years:
+            proj = result.forecast_result.projections[dy.year - 1]
+            fcf_rows.append({
+                "Year": f"Year {dy.year}",
+                "Revenue": f"${proj.revenue / 1e6:,.1f}M",
+                "EBIT": f"${proj.ebit / 1e6:,.1f}M",
+                "NOPAT": f"${proj.nopat / 1e6:,.1f}M",
+                "FCF": f"${dy.fcf / 1e6:,.1f}M",
+                "PV(FCF)": f"${dy.present_value_fcf / 1e6:,.1f}M",
+            })
+        fcf_df = pd.DataFrame(fcf_rows)
+        st.dataframe(fcf_df, use_container_width=True, hide_index=True)
+        
+        # Valuation bridge
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            st.metric("Enterprise Value", f"${result.enterprise_value / 1e9:,.2f}B")
+        with bc2:
+            st.metric("Less: Net Debt", f"${result.net_debt / 1e9:,.2f}B")
+        with bc3:
+            st.metric("Equity Value", f"${result.equity_value / 1e9:,.2f}B")
+        
+        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # Scenario Analysis
+        # ──────────────────────────────────────────────────────────────────────
+        
+        st.markdown("### Scenario Analysis")
+        
+        scenarios = run_scenario_analysis(dcf_inputs)
+        
+        sc_cols = st.columns(3)
+        scenario_icons = {"Bull": ("arrow_upper_right", "#22C55E"), "Base": ("balance", "#3B82F6"), "Bear": ("arrow_lower_right", "#EF4444")}
+        
+        for i, s in enumerate(scenarios):
+            with sc_cols[i]:
+                r = s.dcf_result
+                iv = r.implied_share_price
+                sc_mos = (iv - current) / iv if iv > 0 else -1.0
+                color = scenario_icons.get(s.name, ("", "#888"))[1]
+        
+                st.markdown(
+                    f"<div style='background: linear-gradient(135deg, {color}22, {color}11);"
+                    f"border-radius:12px; padding:20px; border:1px solid {color}44; text-align:center;'>"
+                    f"<h3 style='color:{color}; margin:0;'>{s.name} Case</h3>"
+                    f"<p style='font-size:32px; font-weight:700; margin:8px 0; color:#1E293B;'>${iv:,.2f}</p>"
+                    f"<p style='color:#64748B; margin:0;'>WACC: {r.wacc_result.wacc:.1%} | MoS: {sc_mos:.1%}</p>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        
+        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # Sensitivity Heatmap
+        # ──────────────────────────────────────────────────────────────────────
+        
+        st.markdown("### Sensitivity Analysis — WACC vs. Terminal Growth Rate")
+        
+        base_wacc_computed = result.wacc_result.wacc
+        wacc_center = round(base_wacc_computed, 2)
+        wacc_range = sorted(set([
+            round(wacc_center - 0.02, 3),
+            round(wacc_center - 0.01, 3),
+            round(wacc_center, 3),
+            round(wacc_center + 0.01, 3),
+            round(wacc_center + 0.02, 3),
+        ]))
+        tgr_range = [0.015, 0.020, 0.025, 0.030, 0.035]
+        
+        sensitivity_df = run_sensitivity_analysis(dcf_inputs, wacc_range, tgr_range)
+        
+        # Build Plotly heatmap
+        z_vals = sensitivity_df.values.tolist()
+        x_labels = [str(c) for c in sensitivity_df.columns]
+        y_labels = [str(r) for r in sensitivity_df.index]
+        
+        # Annotation text (formatted prices)
+        annotations_text = []
+        for row in z_vals:
+            ann_row = []
+            for val in row:
+                if val != val:  # NaN
+                    ann_row.append("N/A")
+                else:
+                    ann_row.append(f"${val:,.0f}")
+            annotations_text.append(ann_row)
+        
+        fig = go.Figure(data=go.Heatmap(
+            z=z_vals,
+            x=x_labels,
+            y=y_labels,
+            text=annotations_text,
+            texttemplate="%{text}",
+            textfont={"size": 13, "color": "white"},
+            colorscale=[
+                [0.0, "#DC2626"],
+                [0.3, "#F59E0B"],
+                [0.5, "#FBBF24"],
+                [0.7, "#22C55E"],
+                [1.0, "#15803D"],
+            ],
+            colorbar=dict(
+                title="Share Price",
+                titleside="right",
+                tickprefix="$",
+            ),
+            hovertemplate=(
+                "WACC: %{y}<br>"
+                "Terminal Growth: %{x}<br>"
+                "Implied Price: %{text}<br>"
+                "<extra></extra>"
+            ),
+        ))
+        
+        fig.update_layout(
+            xaxis_title="Terminal Growth Rate",
+            yaxis_title="WACC",
+            yaxis=dict(autorange="reversed"),
+            height=400,
+            margin=dict(l=60, r=40, t=30, b=60),
+            font=dict(family="Inter, sans-serif", size=12),
+            plot_bgcolor="white",
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown(
+            f"<p style='text-align:center; color:#94A3B8; font-size:12px;'>"
+            f"Base case: WACC = {base_wacc_computed:.1%}, TGR = {terminal_growth:.1%}"
+            f"</p>",
+            unsafe_allow_html=True,
+        )
+        
+        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        
+        
+        # ──────────────────────────────────────────────────────────────────────
+        # PDF Download
+        # ──────────────────────────────────────────────────────────────────────
+        
+        st.markdown("### Export Report")
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = generate_pdf_report(
+                ticker_data=data,
+                dcf_result=result,
+                scenarios=scenarios,
+                sensitivity_df=sensitivity_df,
+                output_dir=tmp_dir,
+            )
+        
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+        
+            st.download_button(
+                label=f"Download {data.ticker} DCF Report (PDF)",
+                data=pdf_bytes,
+                file_name=f"{data.ticker}_DCF_Report.pdf",
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+        
+
+with tab_manual:
+    # Manual N-1 Solver
+    # ──────────────────────────────────────────────────────────────────────
+    
+    st.markdown("### Manual N-1 Variable Solver")
     st.markdown(
-        "Enter a **ticker symbol** in the sidebar and click "
-        "**Fetch Live Data** to begin."
-    )
-    st.stop()
-
-if st.session_state.get("fetch_error"):
-    st.error(f"Failed to fetch data: {st.session_state['fetch_error']}")
-    st.stop()
-
-data: TickerData = st.session_state["ticker_data"]
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Run DCF with current slider values
-# ──────────────────────────────────────────────────────────────────────
-
-wacc_inputs = _build_wacc_inputs(data, wacc_override=wacc_val)
-forecast_inputs = _build_forecast_inputs(
-    data, growth_override=growth_rate, n_years=forecast_years,
-)
-
-dcf_inputs = DCFInputs(
-    wacc_inputs=wacc_inputs,
-    forecast_inputs=forecast_inputs,
-    terminal_growth_rate=terminal_growth,
-    net_debt=data.net_debt,
-    shares_outstanding=data.shares_outstanding,
-)
-
-try:
-    result = run_dcf(dcf_inputs)
-except ValueError as e:
-    st.error(f"Model Error: {e}")
-    st.stop()
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Header
-# ──────────────────────────────────────────────────────────────────────
-
-st.markdown(f"# {data.company_name} ({data.ticker})")
-
-intrinsic = result.implied_share_price
-current = data.current_price
-mos = (intrinsic - current) / intrinsic if intrinsic > 0 else -1.0
-
-if mos > 0.15:
-    badge = '<span class="badge-under">UNDERVALUED</span>'
-elif mos > 0:
-    badge = '<span class="badge-fair">FAIRLY VALUED</span>'
-else:
-    badge = '<span class="badge-over">OVERVALUED</span>'
-
-# Key metrics row
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.markdown(_metric_card(f"${intrinsic:,.2f}", "Intrinsic Value"), unsafe_allow_html=True)
-with c2:
-    st.markdown(_metric_card(f"${current:,.2f}", "Market Price"), unsafe_allow_html=True)
-with c3:
-    st.markdown(_metric_card(f"{mos:.1%}", "Margin of Safety"), unsafe_allow_html=True)
-with c4:
-    st.markdown(
-        _metric_card(badge, "Recommendation"),
+        "<p style='color:#64748B; font-size:13px; margin-bottom:16px;'>"
+        "Enter explicit cash flows and assumptions below.  Select the "
+        "<b>target variable</b> to solve for — the solver computes it "
+        "automatically whenever you change an input.</p>",
         unsafe_allow_html=True,
     )
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# WACC & Assumptions
-# ──────────────────────────────────────────────────────────────────────
-
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.markdown("### WACC Breakdown")
-    w = result.wacc_result
-    wacc_data = {
-        "Component": [
-            "Cost of Equity (CAPM)",
-            "Cost of Debt (after-tax)",
-            "Equity Weight",
-            "Debt Weight",
-            "**WACC**",
-        ],
-        "Value": [
-            f"{w.cost_of_equity:.2%}",
-            f"{w.cost_of_debt_aftertax:.2%}",
-            f"{w.equity_ratio:.1%}",
-            f"{w.debt_ratio:.1%}",
-            f"**{w.wacc:.2%}**",
-        ],
+    
+    # ── Dropdown: choose the solve target ────────────────────────────────
+    _SOLVE_OPTIONS = {
+        "Implied Enterprise Value (PV)":  "manual_target_pv",
+        "Initial Outlay (CF0)":           "manual_cf0",
+        "Discount Rate (WACC)":           "manual_wacc",
+        "Perpetual Growth Rate (g)":      "manual_g",
     }
-    st.table(wacc_data)
-
-with col_right:
-    st.markdown("### Forecast Assumptions")
-    fi = forecast_inputs
-    import pandas as pd
-    assumptions_df = pd.DataFrame({
-        "Year": [f"Yr {i+1}" for i in range(forecast_years)],
-        "Growth": [f"{g:.1%}" for g in fi.revenue_growth_rates],
-        "Margin": [f"{m:.1%}" for m in fi.ebit_margins],
-        "Tax": [f"{t:.1%}" for t in fi.tax_rates],
-        "CapEx %": [f"{c:.1%}" for c in fi.capex_pct_of_rev],
-    })
-    st.dataframe(assumptions_df, use_container_width=True, hide_index=True)
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# FCF Projections
-# ──────────────────────────────────────────────────────────────────────
-
-st.markdown("### Projected Free Cash Flows")
-
-fcf_rows = []
-for dy in result.discounted_years:
-    proj = result.forecast_result.projections[dy.year - 1]
-    fcf_rows.append({
-        "Year": f"Year {dy.year}",
-        "Revenue": f"${proj.revenue / 1e6:,.1f}M",
-        "EBIT": f"${proj.ebit / 1e6:,.1f}M",
-        "NOPAT": f"${proj.nopat / 1e6:,.1f}M",
-        "FCF": f"${dy.fcf / 1e6:,.1f}M",
-        "PV(FCF)": f"${dy.present_value_fcf / 1e6:,.1f}M",
-    })
-fcf_df = pd.DataFrame(fcf_rows)
-st.dataframe(fcf_df, use_container_width=True, hide_index=True)
-
-# Valuation bridge
-bc1, bc2, bc3 = st.columns(3)
-with bc1:
-    st.metric("Enterprise Value", f"${result.enterprise_value / 1e9:,.2f}B")
-with bc2:
-    st.metric("Less: Net Debt", f"${result.net_debt / 1e9:,.2f}B")
-with bc3:
-    st.metric("Equity Value", f"${result.equity_value / 1e9:,.2f}B")
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Scenario Analysis
-# ──────────────────────────────────────────────────────────────────────
-
-st.markdown("### Scenario Analysis")
-
-scenarios = run_scenario_analysis(dcf_inputs)
-
-sc_cols = st.columns(3)
-scenario_icons = {"Bull": ("arrow_upper_right", "#22C55E"), "Base": ("balance", "#3B82F6"), "Bear": ("arrow_lower_right", "#EF4444")}
-
-for i, s in enumerate(scenarios):
-    with sc_cols[i]:
-        r = s.dcf_result
-        iv = r.implied_share_price
-        sc_mos = (iv - current) / iv if iv > 0 else -1.0
-        color = scenario_icons.get(s.name, ("", "#888"))[1]
-
+    _SOLVE_LABELS = list(_SOLVE_OPTIONS.keys())
+    _SOLVE_KEYS   = list(_SOLVE_OPTIONS.values())
+    
+    
+    def _on_solve_target_change() -> None:
+        """Update manual_solve_for when the selectbox changes, then re-solve."""
+        selected_label = st.session_state["_manual_solve_dropdown"]
+        st.session_state["manual_solve_for"] = _SOLVE_OPTIONS[selected_label]
+        run_valuation_solver()
+    
+    
+    # Derive the current index from session_state
+    _current_solve_key = st.session_state["manual_solve_for"]
+    _current_idx = _SOLVE_KEYS.index(_current_solve_key) if _current_solve_key in _SOLVE_KEYS else 0
+    
+    st.selectbox(
+        "Target Variable to Solve For",
+        options=_SOLVE_LABELS,
+        index=_current_idx,
+        key="_manual_solve_dropdown",
+        on_change=_on_solve_target_change,
+        help="The selected variable will be computed from the others.",
+    )
+    
+    # ── Convenience: which keys are disabled ─────────────────────────────
+    _solving = st.session_state["manual_solve_for"]
+    
+    
+    # ── Solved result metric card ────────────────────────────────────────
+    _result = st.session_state.get("manual_solver_result")
+    _error  = st.session_state.get("manual_solver_error")
+    
+    if _error:
+        st.error(f"Solver Error: {_error}")
+    elif _result:
+        _solved_name = _result["variable"]
+        _solved_val  = _result["value"]
+        # Format label from the options dict (reverse-lookup)
+        _display_name = next(
+            (lbl for lbl, k in _SOLVE_OPTIONS.items() if _SOLVE_TARGET_MAP.get(k) == _solved_name),
+            _solved_name,
+        )
+        # Choose format
+        if _solved_name in ("wacc", "perpetual_growth"):
+            _display_val = f"{_solved_val:.4%}"
+        else:
+            _display_val = f"${_solved_val:,.2f}"
+    
         st.markdown(
-            f"<div style='background: linear-gradient(135deg, {color}22, {color}11);"
-            f"border-radius:12px; padding:20px; border:1px solid {color}44; text-align:center;'>"
-            f"<h3 style='color:{color}; margin:0;'>{s.name} Case</h3>"
-            f"<p style='font-size:32px; font-weight:700; margin:8px 0; color:#1E293B;'>${iv:,.2f}</p>"
-            f"<p style='color:#64748B; margin:0;'>WACC: {r.wacc_result.wacc:.1%} | MoS: {sc_mos:.1%}</p>"
+            f"<div class='metric-card' style='margin-bottom:20px;'>"
+            f"<div class='value'>{_display_val}</div>"
+            f"<div class='label'>Solved: {_display_name}</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Sensitivity Heatmap
-# ──────────────────────────────────────────────────────────────────────
-
-st.markdown("### Sensitivity Analysis — WACC vs. Terminal Growth Rate")
-
-base_wacc_computed = result.wacc_result.wacc
-wacc_center = round(base_wacc_computed, 2)
-wacc_range = sorted(set([
-    round(wacc_center - 0.02, 3),
-    round(wacc_center - 0.01, 3),
-    round(wacc_center, 3),
-    round(wacc_center + 0.01, 3),
-    round(wacc_center + 0.02, 3),
-]))
-tgr_range = [0.015, 0.020, 0.025, 0.030, 0.035]
-
-sensitivity_df = run_sensitivity_analysis(dcf_inputs, wacc_range, tgr_range)
-
-# Build Plotly heatmap
-z_vals = sensitivity_df.values.tolist()
-x_labels = [str(c) for c in sensitivity_df.columns]
-y_labels = [str(r) for r in sensitivity_df.index]
-
-# Annotation text (formatted prices)
-annotations_text = []
-for row in z_vals:
-    ann_row = []
-    for val in row:
-        if val != val:  # NaN
-            ann_row.append("N/A")
-        else:
-            ann_row.append(f"${val:,.0f}")
-    annotations_text.append(ann_row)
-
-fig = go.Figure(data=go.Heatmap(
-    z=z_vals,
-    x=x_labels,
-    y=y_labels,
-    text=annotations_text,
-    texttemplate="%{text}",
-    textfont={"size": 13, "color": "white"},
-    colorscale=[
-        [0.0, "#DC2626"],
-        [0.3, "#F59E0B"],
-        [0.5, "#FBBF24"],
-        [0.7, "#22C55E"],
-        [1.0, "#15803D"],
-    ],
-    colorbar=dict(
-        title="Share Price",
-        titleside="right",
-        tickprefix="$",
-    ),
-    hovertemplate=(
-        "WACC: %{y}<br>"
-        "Terminal Growth: %{x}<br>"
-        "Implied Price: %{text}<br>"
-        "<extra></extra>"
-    ),
-))
-
-fig.update_layout(
-    xaxis_title="Terminal Growth Rate",
-    yaxis_title="WACC",
-    yaxis=dict(autorange="reversed"),
-    height=400,
-    margin=dict(l=60, r=40, t=30, b=60),
-    font=dict(family="Inter, sans-serif", size=12),
-    plot_bgcolor="white",
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-st.markdown(
-    f"<p style='text-align:center; color:#94A3B8; font-size:12px;'>"
-    f"Base case: WACC = {base_wacc_computed:.1%}, TGR = {terminal_growth:.1%}"
-    f"</p>",
-    unsafe_allow_html=True,
-)
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Manual N-1 Solver
-# ──────────────────────────────────────────────────────────────────────
-
-st.markdown("### Manual N-1 Variable Solver")
-st.markdown(
-    "<p style='color:#64748B; font-size:13px; margin-bottom:16px;'>"
-    "Enter explicit cash flows and assumptions below.  Select the "
-    "<b>target variable</b> to solve for — the solver computes it "
-    "automatically whenever you change an input.</p>",
-    unsafe_allow_html=True,
-)
-
-# ── Dropdown: choose the solve target ────────────────────────────────
-_SOLVE_OPTIONS = {
-    "Implied Enterprise Value (PV)":  "manual_target_pv",
-    "Initial Outlay (CF0)":           "manual_cf0",
-    "Discount Rate (WACC)":           "manual_wacc",
-    "Perpetual Growth Rate (g)":      "manual_g",
-}
-_SOLVE_LABELS = list(_SOLVE_OPTIONS.keys())
-_SOLVE_KEYS   = list(_SOLVE_OPTIONS.values())
-
-
-def _on_solve_target_change() -> None:
-    """Update manual_solve_for when the selectbox changes, then re-solve."""
-    selected_label = st.session_state["_manual_solve_dropdown"]
-    st.session_state["manual_solve_for"] = _SOLVE_OPTIONS[selected_label]
-    run_valuation_solver()
-
-
-# Derive the current index from session_state
-_current_solve_key = st.session_state["manual_solve_for"]
-_current_idx = _SOLVE_KEYS.index(_current_solve_key) if _current_solve_key in _SOLVE_KEYS else 0
-
-st.selectbox(
-    "Target Variable to Solve For",
-    options=_SOLVE_LABELS,
-    index=_current_idx,
-    key="_manual_solve_dropdown",
-    on_change=_on_solve_target_change,
-    help="The selected variable will be computed from the others.",
-)
-
-# ── Convenience: which keys are disabled ─────────────────────────────
-_solving = st.session_state["manual_solve_for"]
-
-
-# ── Solved result metric card ────────────────────────────────────────
-_result = st.session_state.get("manual_solver_result")
-_error  = st.session_state.get("manual_solver_error")
-
-if _error:
-    st.error(f"Solver Error: {_error}")
-elif _result:
-    _solved_name = _result["variable"]
-    _solved_val  = _result["value"]
-    # Format label from the options dict (reverse-lookup)
-    _display_name = next(
-        (lbl for lbl, k in _SOLVE_OPTIONS.items() if _SOLVE_TARGET_MAP.get(k) == _solved_name),
-        _solved_name,
-    )
-    # Choose format
-    if _solved_name in ("wacc", "perpetual_growth"):
-        _display_val = f"{_solved_val:.4%}"
-    else:
-        _display_val = f"${_solved_val:,.2f}"
-
-    st.markdown(
-        f"<div class='metric-card' style='margin-bottom:20px;'>"
-        f"<div class='value'>{_display_val}</div>"
-        f"<div class='label'>Solved: {_display_name}</div>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-# ── Row 1: Timing parameters ────────────────────────────────────────
-st.markdown("#### Timing & Structure")
-t_c1, t_c2, t_c3 = st.columns(3)
-
-with t_c1:
-    st.number_input(
-        "Projection Periods (N)",
-        min_value=1, max_value=30, step=1,
-        key="manual_n",
-        on_change=run_valuation_solver,
-        help="Number of explicit cash flow periods.",
-    )
-
-with t_c2:
-    st.number_input(
-        "Compounding Frequency (m)",
-        min_value=1, max_value=365, step=1,
-        key="manual_m",
-        on_change=run_valuation_solver,
-        help="1 = annual, 2 = semi-annual, 12 = monthly.",
-    )
-
-with t_c3:
-    st.checkbox(
-        "Mid-Year Convention",
-        key="manual_mid_year",
-        on_change=run_valuation_solver,
-        help="Discount to midpoint of each period instead of end.",
-    )
-
-# ── Row 2: Rate variables ───────────────────────────────────────────
-st.markdown("#### Rates & Targets")
-r_c1, r_c2, r_c3, r_c4 = st.columns(4)
-
-with r_c1:
-    st.number_input(
-        "WACC (Discount Rate)",
-        min_value=-0.99, max_value=1.0, step=0.005,
-        format="%.4f",
-        key="manual_wacc",
-        disabled=(_solving == "manual_wacc"),
-        on_change=run_valuation_solver,
-    )
-
-with r_c2:
-    st.number_input(
-        "Perpetual Growth (g)",
-        min_value=-0.50, max_value=0.50, step=0.005,
-        format="%.4f",
-        key="manual_g",
-        disabled=(_solving == "manual_g"),
-        on_change=run_valuation_solver,
-    )
-
-with r_c3:
-    st.number_input(
-        "Target PV",
-        step=10_000.0,
-        format="%.2f",
-        key="manual_target_pv",
-        disabled=(_solving == "manual_target_pv"),
-        on_change=run_valuation_solver,
-    )
-
-with r_c4:
-    st.number_input(
-        "Target NPV",
-        step=10_000.0,
-        format="%.2f",
-        key="manual_target_npv",
-        on_change=run_valuation_solver,
-        help="Usually 0 when solving for IRR.",
-    )
-
-# ── Row 3: CF0 & Terminal Value ──────────────────────────────────────
-st.markdown("#### Initial Outlay & Terminal Value")
-v_c1, v_c2 = st.columns(2)
-
-with v_c1:
-    st.number_input(
-        "Initial Outlay (CF₀)",
-        step=10_000.0,
-        format="%.2f",
-        key="manual_cf0",
-        disabled=(_solving == "manual_cf0"),
-        on_change=run_valuation_solver,
-        help="Cash outflow at t=0 (typically negative).",
-    )
-
-with v_c2:
-    st.number_input(
-        "Terminal Value (at end of period N)",
-        step=10_000.0,
-        format="%.2f",
-        key="manual_tv",
-        on_change=run_valuation_solver,
-        help="Lump-sum terminal value appended after the last period.",
-    )
-
-# ── Row 4: Discrete cash flows ──────────────────────────────────────
-st.markdown("#### Discrete Cash Flows (CF₁ … CFₙ)")
-
-_n = int(st.session_state["manual_n"])
-_cfs = st.session_state["manual_cfs"]
-
-# Ensure the list has exactly N entries for the current period count
-if len(_cfs) < _n:
-    _cfs.extend([0.0] * (_n - len(_cfs)))
-    st.session_state["manual_cfs"] = _cfs
-elif len(_cfs) > _n:
-    st.session_state["manual_cfs"] = _cfs[:_n]
+    
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+    
+    # ── Row 1: Timing parameters ────────────────────────────────────────
+    st.markdown("#### Timing & Structure")
+    t_c1, t_c2, t_c3 = st.columns(3)
+    
+    with t_c1:
+        st.number_input(
+            "Projection Periods (N)",
+            min_value=1, max_value=30, step=1,
+            key="manual_n",
+            on_change=run_valuation_solver,
+            help="Number of explicit cash flow periods.",
+        )
+    
+    with t_c2:
+        st.number_input(
+            "Compounding Frequency (m)",
+            min_value=1, max_value=365, step=1,
+            key="manual_m",
+            on_change=run_valuation_solver,
+            help="1 = annual, 2 = semi-annual, 12 = monthly.",
+        )
+    
+    with t_c3:
+        st.checkbox(
+            "Mid-Year Convention",
+            key="manual_mid_year",
+            on_change=run_valuation_solver,
+            help="Discount to midpoint of each period instead of end.",
+        )
+    
+    # ── Row 2: Rate variables ───────────────────────────────────────────
+    st.markdown("#### Rates & Targets")
+    r_c1, r_c2, r_c3, r_c4 = st.columns(4)
+    
+    with r_c1:
+        st.number_input(
+            "WACC (Discount Rate)",
+            min_value=-0.99, max_value=1.0, step=0.005,
+            format="%.4f",
+            key="manual_wacc",
+            disabled=(_solving == "manual_wacc"),
+            on_change=run_valuation_solver,
+        )
+    
+    with r_c2:
+        st.number_input(
+            "Perpetual Growth (g)",
+            min_value=-0.50, max_value=0.50, step=0.005,
+            format="%.4f",
+            key="manual_g",
+            disabled=(_solving == "manual_g"),
+            on_change=run_valuation_solver,
+        )
+    
+    with r_c3:
+        st.number_input(
+            "Target PV",
+            step=10_000.0,
+            format="%.2f",
+            key="manual_target_pv",
+            disabled=(_solving == "manual_target_pv"),
+            on_change=run_valuation_solver,
+        )
+    
+    with r_c4:
+        st.number_input(
+            "Target NPV",
+            step=10_000.0,
+            format="%.2f",
+            key="manual_target_npv",
+            on_change=run_valuation_solver,
+            help="Usually 0 when solving for IRR.",
+        )
+    
+    # ── Row 3: CF0 & Terminal Value ──────────────────────────────────────
+    st.markdown("#### Initial Outlay & Terminal Value")
+    v_c1, v_c2 = st.columns(2)
+    
+    with v_c1:
+        st.number_input(
+            "Initial Outlay (CF₀)",
+            step=10_000.0,
+            format="%.2f",
+            key="manual_cf0",
+            disabled=(_solving == "manual_cf0"),
+            on_change=run_valuation_solver,
+            help="Cash outflow at t=0 (typically negative).",
+        )
+    
+    with v_c2:
+        st.number_input(
+            "Terminal Value (at end of period N)",
+            step=10_000.0,
+            format="%.2f",
+            key="manual_tv",
+            on_change=run_valuation_solver,
+            help="Lump-sum terminal value appended after the last period.",
+        )
+    
+    # ── Row 4: Discrete cash flows ──────────────────────────────────────
+    st.markdown("#### Discrete Cash Flows (CF₁ … CFₙ)")
+    
+    _n = int(st.session_state["manual_n"])
     _cfs = st.session_state["manual_cfs"]
-
-# Render CF inputs in rows of 5
-_cf_cols_per_row = 5
-for row_start in range(0, _n, _cf_cols_per_row):
-    row_end = min(row_start + _cf_cols_per_row, _n)
-    cols = st.columns(row_end - row_start)
-    for col_idx, period_idx in enumerate(range(row_start, row_end)):
-        with cols[col_idx]:
-
-            def _make_cf_callback(idx: int):
-                """Factory to capture idx by value (avoids late-binding bug)."""
-                def _cb():
-                    st.session_state["manual_cfs"][idx] = st.session_state[f"_cf_input_{idx}"]
-                    run_valuation_solver()
-                return _cb
-
-            st.number_input(
-                f"CF{period_idx + 1}",
-                value=float(_cfs[period_idx]),
-                step=10_000.0,
-                format="%.2f",
-                key=f"_cf_input_{period_idx}",
-                on_change=_make_cf_callback(period_idx),
-            )
-
-st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# PDF Download
-# ──────────────────────────────────────────────────────────────────────
-
-st.markdown("### Export Report")
-
-with tempfile.TemporaryDirectory() as tmp_dir:
-    pdf_path = generate_pdf_report(
-        ticker_data=data,
-        dcf_result=result,
-        scenarios=scenarios,
-        sensitivity_df=sensitivity_df,
-        output_dir=tmp_dir,
-    )
-
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-
-    st.download_button(
-        label=f"Download {data.ticker} DCF Report (PDF)",
-        data=pdf_bytes,
-        file_name=f"{data.ticker}_DCF_Report.pdf",
-        mime="application/pdf",
-        type="primary",
-        use_container_width=True,
-    )
+    
+    # Ensure the list has exactly N entries for the current period count
+    if len(_cfs) < _n:
+        _cfs.extend([0.0] * (_n - len(_cfs)))
+        st.session_state["manual_cfs"] = _cfs
+    elif len(_cfs) > _n:
+        st.session_state["manual_cfs"] = _cfs[:_n]
+        _cfs = st.session_state["manual_cfs"]
+    
+    # Render CF inputs in rows of 5
+    _cf_cols_per_row = 5
+    for row_start in range(0, _n, _cf_cols_per_row):
+        row_end = min(row_start + _cf_cols_per_row, _n)
+        cols = st.columns(row_end - row_start)
+        for col_idx, period_idx in enumerate(range(row_start, row_end)):
+            with cols[col_idx]:
+    
+                def _make_cf_callback(idx: int):
+                    """Factory to capture idx by value (avoids late-binding bug)."""
+                    def _cb():
+                        st.session_state["manual_cfs"][idx] = st.session_state[f"_cf_input_{idx}"]
+                        run_valuation_solver()
+                    return _cb
+    
+                st.number_input(
+                    f"CF{period_idx + 1}",
+                    value=float(_cfs[period_idx]),
+                    step=10_000.0,
+                    format="%.2f",
+                    key=f"_cf_input_{period_idx}",
+                    on_change=_make_cf_callback(period_idx),
+                )
+    
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+    
+    
+    # ──────────────────────────────────────────────────────────────────────
 
 st.markdown(
     "<p style='text-align:center; color:#94A3B8; font-size:11px; margin-top:24px;'>"
