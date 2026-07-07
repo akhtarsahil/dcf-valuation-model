@@ -242,10 +242,10 @@ _SOLVE_TARGET_MAP = {
 
 
 def run_valuation_solver() -> None:
-    """Read session_state → build ManualDCFInputs → solve → write back."""
-    solve_for = st.session_state["manual_solve_for"]
+    """Inspect current state and automatically solve for all relevant blank fields."""
     st.session_state["manual_solver_error"] = None
-    st.session_state["manual_solver_result"] = None
+    st.session_state["manual_solved_summary"] = []
+    solved = []
 
     try:
         # ── Read current state ───────────────────────────────────────
@@ -254,10 +254,10 @@ def run_valuation_solver() -> None:
         mid = bool(st.session_state["manual_mid_year"])
         
         cf0_raw = st.session_state.get("manual_cf0")
-        cf0 = float(cf0_raw) if cf0_raw is not None else 0.0
+        cf0 = float(cf0_raw) if cf0_raw is not None else None
 
         tv_raw = st.session_state.get("manual_tv")
-        tv = float(tv_raw) if tv_raw is not None else 0.0
+        tv = float(tv_raw) if tv_raw is not None else None
 
         w_raw = st.session_state.get("manual_wacc")
         w = float(w_raw) if w_raw is not None else None
@@ -266,61 +266,96 @@ def run_valuation_solver() -> None:
         g = float(g_raw) if g_raw is not None else None
 
         tpv_raw = st.session_state.get("manual_target_pv")
-        tpv = float(tpv_raw) if tpv_raw is not None else 0.0
+        tpv = float(tpv_raw) if tpv_raw is not None else None
 
         npv_raw = st.session_state.get("manual_target_npv")
-        npv = float(npv_raw) if npv_raw is not None else 0.0
+        npv = float(npv_raw) if npv_raw is not None else None
 
         cfs = []
         for v in st.session_state.get("manual_cfs", [])[:n]:
             cfs.append(float(v) if v is not None else 0.0)
 
-        # ── Pre-check: don't attempt solving if required inputs are blank ──
-        if solve_for in ("manual_target_pv", "manual_cf0") and w is None:
-            return
-        if solve_for == "manual_g" and (w is None or tv == 0.0):
-            return
-        if solve_for == "manual_wacc" and all(c == 0.0 for c in cfs) and cf0 == 0.0 and tv == 0.0:
-            return
-
-        nd  = 0.0   # net_debt — currently not surfaced as an input
-        so  = 1.0   # shares_outstanding — currently not surfaced
-
-        # ── Pad / trim cash_flows to match n ─────────────────────────
         if len(cfs) < n:
             cfs.extend([0.0] * (n - len(cfs)))
         elif len(cfs) > n:
             cfs = cfs[:n]
 
-        # ── Build kwargs, setting the solve-target to None ───────────
-        kwargs = dict(
-            projection_period_n=n,
-            compounding_m=m,
-            mid_year_convention=mid,
-            initial_outlay_cf0=cf0,
-            cash_flows=cfs,
-            terminal_value=tv,
-            wacc=w,
-            perpetual_growth=g,
-            target_npv=npv,
-            target_pv=tpv,
-            net_debt=nd,
-            shares_outstanding=so,
-        )
+        # ── 1. Can we solve WACC (IRR)? ──────────────────────────────
+        if w is None and ((cf0 is not None and cf0 != 0.0) or any(c < 0 for c in cfs)):
+            try:
+                inputs_w = ManualDCFInputs(
+                    projection_period_n=n, compounding_m=m, mid_year_convention=mid,
+                    initial_outlay_cf0=(cf0 or 0.0), cash_flows=cfs, terminal_value=(tv or 0.0),
+                    wacc=None, perpetual_growth=(g or 0.025), target_npv=(npv or 0.0), target_pv=0.0
+                )
+                res = solve_missing_variable(inputs_w)
+                w = float(res["value"])
+                st.session_state["manual_wacc"] = w
+                st.session_state["_wacc_text"] = _fmt_rate(w)
+                solved.append(("Discount Rate (WACC / IRR)", _fmt_rate(w)))
+            except Exception:
+                pass
 
-        # Map the session-state key to the ManualDCFInputs field name
-        dcf_field = _SOLVE_TARGET_MAP[solve_for]
-        kwargs[dcf_field] = None
+        # ── 2. Can we solve Terminal Value (TV)? ─────────────────────
+        if tv is None:
+            if tpv is not None and w is not None:
+                from models.solver import _calculate_pv, _discount_factor
+                pv_cfs = _calculate_pv(w, cfs, None, m, mid)
+                df_n = _discount_factor(w, n, m, False)
+                if df_n > 0:
+                    tv = (tpv - pv_cfs) / df_n
+                    st.session_state["manual_tv"] = tv
+                    st.session_state["_tv_text"] = _fmt_currency(tv)
+                    solved.append(("Terminal Value (TV)", _fmt_currency(tv)))
+            elif w is not None and g is not None and len(cfs) > 0 and cfs[-1] != 0.0:
+                if w > g:
+                    tv = (cfs[-1] * (1.0 + g)) / (w - g)
+                    st.session_state["manual_tv"] = tv
+                    st.session_state["_tv_text"] = _fmt_currency(tv)
+                    solved.append(("Terminal Value (TV)", _fmt_currency(tv)))
 
-        inputs = ManualDCFInputs(**kwargs)
+        # ── 3. Can we solve Terminal Growth Rate (g)? ────────────────
+        if g is None and w is not None and tv is not None and tv != 0.0 and len(cfs) > 0 and cfs[-1] != 0.0:
+            denom = tv + cfs[-1]
+            if denom != 0.0:
+                g_calc = (tv * w - cfs[-1]) / denom
+                if g_calc < w:
+                    g = g_calc
+                    st.session_state["manual_g"] = g
+                    st.session_state["_g_text"] = _fmt_rate(g)
+                    solved.append(("Terminal Growth Rate (g)", _fmt_rate(g)))
 
-        # ── Solve ────────────────────────────────────────────────────
-        result = solve_missing_variable(inputs)
-        solved_value = result["value"]
+        # ── 4. Can we solve Implied Enterprise Value (PV)? ───────────
+        if tpv is None and w is not None:
+            try:
+                inputs_pv = ManualDCFInputs(
+                    projection_period_n=n, compounding_m=m, mid_year_convention=mid,
+                    initial_outlay_cf0=(cf0 or 0.0), cash_flows=cfs, terminal_value=(tv or 0.0),
+                    wacc=w, perpetual_growth=(g or 0.025), target_npv=(npv or 0.0), target_pv=None
+                )
+                res_pv = solve_missing_variable(inputs_pv)
+                tpv = float(res_pv["value"])
+                st.session_state["manual_target_pv"] = tpv
+                st.session_state["_tpv_text"] = _fmt_currency(tpv)
+                solved.append(("Implied Enterprise Value (PV)", _fmt_currency(tpv)))
+            except Exception:
+                pass
 
-        # ── Write the answer back into session_state ─────────────────
-        st.session_state[solve_for] = solved_value
-        st.session_state["manual_solver_result"] = result
+        # ── 5. Can we solve Initial Outlay (CF0) or Target NPV? ──────
+        if cf0 is None and npv is not None and tpv is not None:
+            cf0 = npv - tpv
+            st.session_state["manual_cf0"] = cf0
+            st.session_state["_cf0_text"] = _fmt_currency(cf0)
+            solved.append(("Initial Outlay (CF₀)", _fmt_currency(cf0)))
+        elif npv is None and cf0 is not None and tpv is not None:
+            npv = cf0 + tpv
+            st.session_state["manual_target_npv"] = npv
+            st.session_state["_tnpv_text"] = _fmt_currency(npv)
+            solved.append(("Net Present Value (NPV)", _fmt_currency(npv)))
+
+        st.session_state["manual_solved_summary"] = solved
+        if len(solved) == 0:
+            st.session_state["manual_solver_error"] = "No solvable blank fields found. Enter known parameters (e.g., Cash Flows, WACC, Growth) before clicking Solve."
 
     except Exception as exc:
         st.session_state["manual_solver_error"] = str(exc)
@@ -800,74 +835,50 @@ with tab_manual:
     st.markdown("### Manual N-1 Variable Solver")
     st.markdown(
         "<p style='color:#64748B; font-size:13px; margin-bottom:16px;'>"
-        "Enter explicit cash flows and assumptions below.  Select the "
-        "<b>target variable</b> to solve for — the solver computes it "
-        "automatically whenever you change an input.</p>",
+        "Enter your known assumptions and cash flows below, leaving any unknown values "
+        "(such as <b>Terminal Value</b>, <b>Present Value</b>, or <b>WACC</b>) <b>blank</b>. "
+        "When you click <b>🚀 Solve Valuation</b> at the bottom, the engine automatically "
+        "detects and calculates all missing variables!</p>",
         unsafe_allow_html=True,
     )
     
-    # ── Dropdown: choose the solve target ────────────────────────────────
-    _SOLVE_OPTIONS = {
-        "Implied Enterprise Value (PV)":  "manual_target_pv",
-        "Initial Outlay (CF0)":           "manual_cf0",
-        "Discount Rate (WACC)":           "manual_wacc",
-        "Terminal Growth Rate (g)":       "manual_g",
-    }
-    _SOLVE_LABELS = list(_SOLVE_OPTIONS.keys())
-    _SOLVE_KEYS   = list(_SOLVE_OPTIONS.values())
+    def _on_clear_all():
+        for k in ("manual_cf0", "manual_tv", "manual_wacc", "manual_g", "manual_target_pv", "manual_target_npv"):
+            st.session_state[k] = None
+        for key in ("_wacc_text", "_g_text", "_tpv_text", "_tnpv_text", "_cf0_text", "_tv_text"):
+            if key in st.session_state:
+                st.session_state[key] = ""
+        st.session_state["manual_cfs"] = [None] * 30
+        for i in range(30):
+            if f"_cf_input_{i}" in st.session_state:
+                st.session_state[f"_cf_input_{i}"] = ""
+        st.session_state["manual_solved_summary"] = []
+        st.session_state["manual_solver_error"] = None
     
-    
-    def _on_solve_target_change() -> None:
-        """Update manual_solve_for when the selectbox changes, then re-solve."""
-        selected_label = st.session_state["_manual_solve_dropdown"]
-        st.session_state["manual_solve_for"] = _SOLVE_OPTIONS[selected_label]
-        run_valuation_solver()
-    
-    
-    # Derive the current index from session_state
-    _current_solve_key = st.session_state["manual_solve_for"]
-    _current_idx = _SOLVE_KEYS.index(_current_solve_key) if _current_solve_key in _SOLVE_KEYS else 0
-    
-    st.selectbox(
-        "Target Variable to Solve For",
-        options=_SOLVE_LABELS,
-        index=_current_idx,
-        key="_manual_solve_dropdown",
-        on_change=_on_solve_target_change,
-        help="The selected variable will be computed from the others.",
-    )
-    
-    # ── Convenience: which keys are disabled ─────────────────────────────
-    _solving = st.session_state["manual_solve_for"]
-    
+    col_info, col_btn = st.columns([4, 1])
+    with col_btn:
+        st.button("🗑️ Clear All", on_click=_on_clear_all, use_container_width=True, help="Wipe all fields blank.", key="top_clear_btn")
     
     # ── Solved result metric card ────────────────────────────────────────
-    _result = st.session_state.get("manual_solver_result")
-    _error  = st.session_state.get("manual_solver_error")
+    _summary = st.session_state.get("manual_solved_summary")
+    _error   = st.session_state.get("manual_solver_error")
     
     if _error:
         st.error(f"Solver Error: {_error}")
-    elif _result:
-        _solved_name = _result["variable"]
-        _solved_val  = _result["value"]
-        # Format label from the options dict (reverse-lookup)
-        _display_name = next(
-            (lbl for lbl, k in _SOLVE_OPTIONS.items() if _SOLVE_TARGET_MAP.get(k) == _solved_name),
-            _solved_name,
-        )
-        # Choose format
-        if _solved_name in ("wacc", "perpetual_growth"):
-            _display_val = f"{_solved_val:.4%}"
-        else:
-            _display_val = f"${_solved_val:,.2f}"
-    
-        st.markdown(
-            f"<div class='metric-card' style='margin-bottom:20px;'>"
-            f"<div class='value'>{_display_val}</div>"
-            f"<div class='label'>Solved: {_display_name}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+    elif _summary and len(_summary) > 0:
+        st.success(f"**✅ Automatically Solved {len(_summary)} Blank Assumption(s):**")
+        cols = st.columns(min(len(_summary), 3))
+        for idx, (label, val_str) in enumerate(_summary):
+            with cols[idx % len(cols)]:
+                st.markdown(
+                    f"<div class='metric-card' style='margin-bottom:16px; padding:12px;'>"
+                    f"<div class='value' style='font-size:20px;'>{val_str}</div>"
+                    f"<div class='label' style='font-size:11px;'>Solved: {label}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("💡 **Enter parameters below, then click '🚀 Solve Valuation' at the bottom.** Any blank variables will be computed automatically.")
     
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
     
@@ -928,7 +939,6 @@ with tab_manual:
             "WACC (Discount Rate)",
             value=_fmt_rate(st.session_state.get("manual_wacc")),
             key="_wacc_text",
-            disabled=(_solving == "manual_wacc"),
             on_change=_on_wacc_text,
             help="e.g. 10%, 0.10, or just 10",
         )
@@ -938,7 +948,6 @@ with tab_manual:
             "Terminal Growth Rate (g)",
             value=_fmt_rate(st.session_state.get("manual_g")),
             key="_g_text",
-            disabled=(_solving == "manual_g"),
             on_change=_on_g_text,
             help="Also known as Perpetual Growth Rate (g). e.g. 2.5%, 0.025, or 2.5",
         )
@@ -948,7 +957,6 @@ with tab_manual:
             "Target PV",
             value=_fmt_currency(st.session_state.get("manual_target_pv")),
             key="_tpv_text",
-            disabled=(_solving == "manual_target_pv"),
             on_change=_on_tpv_text,
             help="e.g. $1,000,000, 1M, or 100",
         )
@@ -981,7 +989,6 @@ with tab_manual:
             "Initial Outlay (CF₀)",
             value=_fmt_currency(st.session_state.get("manual_cf0")),
             key="_cf0_text",
-            disabled=(_solving == "manual_cf0"),
             on_change=_on_cf0_text,
             help="e.g. -$1,000,000, -1M, or -500",
         )
@@ -1040,23 +1047,19 @@ with tab_manual:
     
     if _error:
         st.error(f"Solver Error: {_error}")
-    elif _result:
-        st.markdown(
-            f"<div class='metric-card' style='margin-bottom:20px;'>"
-            f"<div class='value'>{_display_val}</div>"
-            f"<div class='label'>Solved: {_display_name}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+    elif _summary and len(_summary) > 0:
+        st.success(f"**✅ Automatically Solved {len(_summary)} Blank Assumption(s):**")
+        for label, val_str in _summary:
+            st.write(f"- **{label}**: `{val_str}`")
 
     btn_col1, btn_col2 = st.columns([3, 1])
     with btn_col1:
         st.button(
-            "🚀 Solve Target Variable",
+            "🚀 Solve Valuation (Calculate All Blank Fields)",
             type="primary",
             use_container_width=True,
             on_click=run_valuation_solver,
-            help="Run calculations after all inputs are entered.",
+            help="Automatically detect and solve for any relevant blank assumptions.",
         )
     with btn_col2:
         st.button(
