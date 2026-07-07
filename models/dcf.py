@@ -28,7 +28,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from models.wacc import WACCInputs, WACCResult, calculate_wacc
 from models.forecasting import ForecastInputs, ForecastResult, ProjectedYear, build_forecast
@@ -67,6 +67,107 @@ class DCFInputs:
         if self.terminal_growth_rate < 0:
             raise ValueError(
                 f"terminal_growth_rate must be non-negative, got {self.terminal_growth_rate}"
+            )
+
+
+@dataclass
+class ManualDCFInputs:
+    """Explicit numerical-array DCF inputs that bypass ForecastInputs.
+
+    This dataclass accepts pre-computed cash flows directly (e.g. from a
+    spreadsheet or external model) rather than deriving them from operating
+    drivers like revenue growth and EBIT margins.
+
+    Exactly ONE of the four "solvable" fields must be set to None,
+    indicating that it is the unknown variable to be solved for:
+        - initial_outlay_cf0  (solve for the break-even initial investment)
+        - target_pv           (solve for the present value of cash flows)
+        - wacc                (solve for the implied discount rate / IRR)
+        - perpetual_growth    (solve for the implied terminal growth rate)
+
+    Attributes:
+        projection_period_n:   Number of explicit projection periods (N).
+        compounding_m:         Compounding frequency per period.
+                               1 = annual, 2 = semi-annual, 12 = monthly.
+        mid_year_convention:   If True, discount each period's cash flow to
+                               the midpoint (t − 0.5) rather than end-of-period.
+        initial_outlay_cf0:    The initial cash outflow at t=0 (typically negative).
+                               Set to None to solve for the break-even outlay.
+        cash_flows:            Explicit list of free cash flows for periods 1..N.
+                               Length must equal projection_period_n.
+        terminal_value:        Explicit terminal value at the end of period N.
+                               Set to None if no terminal value applies.
+        wacc:                  Discount rate (as a decimal).  Set to None to
+                               back-solve for the implied WACC / IRR.
+        perpetual_growth:      Perpetuity growth rate applied beyond period N.
+                               Set to None to back-solve for the implied rate.
+        target_npv:            Target Net Present Value (default 0.0).  Used when
+                               solving for the unknown variable (e.g. NPV = 0 for IRR).
+        target_pv:             Target Present Value of future cash flows.
+                               Set to None to solve for PV.
+        net_debt:              Total Debt − Cash, subtracted from Enterprise Value.
+        shares_outstanding:    Fully diluted share count for per-share computation.
+    """
+
+    projection_period_n: int
+    compounding_m: int
+    mid_year_convention: bool
+    initial_outlay_cf0: Optional[float]
+    cash_flows: List[float]
+    terminal_value: Optional[float]
+    wacc: Optional[float]
+    perpetual_growth: Optional[float]
+    target_npv: float = 0.0
+    target_pv: Optional[float] = None
+    net_debt: float = 0.0
+    shares_outstanding: float = 1.0
+
+    def __post_init__(self) -> None:
+        # ── Validate cash_flows length ───────────────────────────────
+        if len(self.cash_flows) != self.projection_period_n:
+            raise ValueError(
+                f"cash_flows length ({len(self.cash_flows)}) must equal "
+                f"projection_period_n ({self.projection_period_n})."
+            )
+
+        # ── Validate compounding frequency ───────────────────────────
+        if self.compounding_m < 1:
+            raise ValueError(
+                f"compounding_m must be >= 1, got {self.compounding_m}."
+            )
+
+        # ── Validate projection period ───────────────────────────────
+        if self.projection_period_n < 1:
+            raise ValueError(
+                f"projection_period_n must be >= 1, got {self.projection_period_n}."
+            )
+
+        # ── Validate shares outstanding ──────────────────────────────
+        if self.shares_outstanding <= 0:
+            raise ValueError(
+                f"shares_outstanding must be positive, got {self.shares_outstanding}."
+            )
+
+        # ── Exactly one solvable variable must be None ───────────────
+        solvable_fields = {
+            "initial_outlay_cf0": self.initial_outlay_cf0,
+            "target_pv": self.target_pv,
+            "wacc": self.wacc,
+            "perpetual_growth": self.perpetual_growth,
+        }
+        none_fields = [name for name, val in solvable_fields.items() if val is None]
+
+        if len(none_fields) == 0:
+            raise ValueError(
+                "Exactly one of (initial_outlay_cf0, target_pv, wacc, "
+                "perpetual_growth) must be None to indicate the solve-for "
+                "variable, but all four are specified."
+            )
+        if len(none_fields) > 1:
+            raise ValueError(
+                f"Exactly one of (initial_outlay_cf0, target_pv, wacc, "
+                f"perpetual_growth) must be None, but {len(none_fields)} "
+                f"are None: {', '.join(none_fields)}."
             )
 
 

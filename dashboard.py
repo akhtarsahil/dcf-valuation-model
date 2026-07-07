@@ -23,8 +23,9 @@ import numpy as np
 from utils.finance import fetch_ticker_data, TickerData
 from models.wacc import WACCInputs
 from models.forecasting import ForecastInputs
-from models.dcf import DCFInputs, DCFResult, run_dcf
+from models.dcf import DCFInputs, DCFResult, ManualDCFInputs, run_dcf
 from models.valuation import run_scenario_analysis, run_sensitivity_analysis
+from models.solver import solve_missing_variable
 from utils.helpers import generate_pdf_report
 
 
@@ -100,6 +101,119 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manual DCF Session State Initialization
+# ──────────────────────────────────────────────────────────────────────
+# Initialize every manual-mode input key exactly once.  Using
+# setdefault() ensures we never overwrite a value that the user or the
+# solver callback has already written, which is the critical guard
+# against Streamlit's re-render-on-state-change loop.
+
+_MANUAL_DEFAULTS = {
+    "manual_n":          5,
+    "manual_m":          1,
+    "manual_mid_year":   False,
+    "manual_cf0":        -1_000_000.0,
+    "manual_cfs":        [200_000.0, 250_000.0, 300_000.0, 350_000.0, 400_000.0],
+    "manual_tv":         500_000.0,
+    "manual_wacc":       0.10,
+    "manual_g":          0.025,
+    "manual_target_pv":  0.0,
+    "manual_target_npv": 0.0,
+    # Which variable the solver should solve for (the one set to None).
+    # Must be one of: "manual_cf0", "manual_target_pv",
+    #                 "manual_wacc", "manual_g".
+    "manual_solve_for":  "manual_target_pv",
+    # Last solver result metadata (read-only display).
+    "manual_solver_result": None,
+    "manual_solver_error":  None,
+}
+
+for _key, _default in _MANUAL_DEFAULTS.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manual DCF Solver Callback
+# ──────────────────────────────────────────────────────────────────────
+# This function is invoked via on_click / on_change BEFORE the next
+# page render.  It reads widget values from session_state, constructs
+# the ManualDCFInputs with the designated target set to None, runs the
+# solver, and writes the answer back into session_state.  Because the
+# write happens inside a callback (not inline), Streamlit will pick up
+# the updated value in the same render cycle without triggering a
+# secondary re-run — preventing the infinite-loop problem.
+
+_SOLVE_TARGET_MAP = {
+    "manual_cf0":       "initial_outlay_cf0",
+    "manual_target_pv": "target_pv",
+    "manual_wacc":      "wacc",
+    "manual_g":         "perpetual_growth",
+}
+
+
+def run_valuation_solver() -> None:
+    """Read session_state → build ManualDCFInputs → solve → write back."""
+    solve_for = st.session_state["manual_solve_for"]
+    st.session_state["manual_solver_error"] = None
+    st.session_state["manual_solver_result"] = None
+
+    try:
+        # ── Read current state ───────────────────────────────────────
+        n   = int(st.session_state["manual_n"])
+        m   = int(st.session_state["manual_m"])
+        mid = bool(st.session_state["manual_mid_year"])
+        cf0 = float(st.session_state["manual_cf0"])
+        cfs = [float(v) for v in st.session_state["manual_cfs"][:n]]
+        tv  = float(st.session_state["manual_tv"])
+        w   = float(st.session_state["manual_wacc"])
+        g   = float(st.session_state["manual_g"])
+        tpv = float(st.session_state["manual_target_pv"])
+        npv = float(st.session_state["manual_target_npv"])
+        nd  = 0.0   # net_debt — currently not surfaced as an input
+        so  = 1.0   # shares_outstanding — currently not surfaced
+
+        # ── Pad / trim cash_flows to match n ─────────────────────────
+        if len(cfs) < n:
+            cfs.extend([0.0] * (n - len(cfs)))
+        elif len(cfs) > n:
+            cfs = cfs[:n]
+
+        # ── Build kwargs, setting the solve-target to None ───────────
+        kwargs = dict(
+            projection_period_n=n,
+            compounding_m=m,
+            mid_year_convention=mid,
+            initial_outlay_cf0=cf0,
+            cash_flows=cfs,
+            terminal_value=tv,
+            wacc=w,
+            perpetual_growth=g,
+            target_npv=npv,
+            target_pv=tpv,
+            net_debt=nd,
+            shares_outstanding=so,
+        )
+
+        # Map the session-state key to the ManualDCFInputs field name
+        dcf_field = _SOLVE_TARGET_MAP[solve_for]
+        kwargs[dcf_field] = None
+
+        inputs = ManualDCFInputs(**kwargs)
+
+        # ── Solve ────────────────────────────────────────────────────
+        result = solve_missing_variable(inputs)
+        solved_value = result["value"]
+
+        # ── Write the answer back into session_state ─────────────────
+        st.session_state[solve_for] = solved_value
+        st.session_state["manual_solver_result"] = result
+
+    except Exception as exc:
+        st.session_state["manual_solver_error"] = str(exc)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -532,6 +646,224 @@ st.markdown(
     f"</p>",
     unsafe_allow_html=True,
 )
+
+st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manual N-1 Solver
+# ──────────────────────────────────────────────────────────────────────
+
+st.markdown("### Manual N-1 Variable Solver")
+st.markdown(
+    "<p style='color:#64748B; font-size:13px; margin-bottom:16px;'>"
+    "Enter explicit cash flows and assumptions below.  Select the "
+    "<b>target variable</b> to solve for — the solver computes it "
+    "automatically whenever you change an input.</p>",
+    unsafe_allow_html=True,
+)
+
+# ── Dropdown: choose the solve target ────────────────────────────────
+_SOLVE_OPTIONS = {
+    "Implied Enterprise Value (PV)":  "manual_target_pv",
+    "Initial Outlay (CF0)":           "manual_cf0",
+    "Discount Rate (WACC)":           "manual_wacc",
+    "Perpetual Growth Rate (g)":      "manual_g",
+}
+_SOLVE_LABELS = list(_SOLVE_OPTIONS.keys())
+_SOLVE_KEYS   = list(_SOLVE_OPTIONS.values())
+
+
+def _on_solve_target_change() -> None:
+    """Update manual_solve_for when the selectbox changes, then re-solve."""
+    selected_label = st.session_state["_manual_solve_dropdown"]
+    st.session_state["manual_solve_for"] = _SOLVE_OPTIONS[selected_label]
+    run_valuation_solver()
+
+
+# Derive the current index from session_state
+_current_solve_key = st.session_state["manual_solve_for"]
+_current_idx = _SOLVE_KEYS.index(_current_solve_key) if _current_solve_key in _SOLVE_KEYS else 0
+
+st.selectbox(
+    "Target Variable to Solve For",
+    options=_SOLVE_LABELS,
+    index=_current_idx,
+    key="_manual_solve_dropdown",
+    on_change=_on_solve_target_change,
+    help="The selected variable will be computed from the others.",
+)
+
+# ── Convenience: which keys are disabled ─────────────────────────────
+_solving = st.session_state["manual_solve_for"]
+
+
+# ── Solved result metric card ────────────────────────────────────────
+_result = st.session_state.get("manual_solver_result")
+_error  = st.session_state.get("manual_solver_error")
+
+if _error:
+    st.error(f"Solver Error: {_error}")
+elif _result:
+    _solved_name = _result["variable"]
+    _solved_val  = _result["value"]
+    # Format label from the options dict (reverse-lookup)
+    _display_name = next(
+        (lbl for lbl, k in _SOLVE_OPTIONS.items() if _SOLVE_TARGET_MAP.get(k) == _solved_name),
+        _solved_name,
+    )
+    # Choose format
+    if _solved_name in ("wacc", "perpetual_growth"):
+        _display_val = f"{_solved_val:.4%}"
+    else:
+        _display_val = f"${_solved_val:,.2f}"
+
+    st.markdown(
+        f"<div class='metric-card' style='margin-bottom:20px;'>"
+        f"<div class='value'>{_display_val}</div>"
+        f"<div class='label'>Solved: {_display_name}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+
+# ── Row 1: Timing parameters ────────────────────────────────────────
+st.markdown("#### Timing & Structure")
+t_c1, t_c2, t_c3 = st.columns(3)
+
+with t_c1:
+    st.number_input(
+        "Projection Periods (N)",
+        min_value=1, max_value=30, step=1,
+        key="manual_n",
+        on_change=run_valuation_solver,
+        help="Number of explicit cash flow periods.",
+    )
+
+with t_c2:
+    st.number_input(
+        "Compounding Frequency (m)",
+        min_value=1, max_value=365, step=1,
+        key="manual_m",
+        on_change=run_valuation_solver,
+        help="1 = annual, 2 = semi-annual, 12 = monthly.",
+    )
+
+with t_c3:
+    st.checkbox(
+        "Mid-Year Convention",
+        key="manual_mid_year",
+        on_change=run_valuation_solver,
+        help="Discount to midpoint of each period instead of end.",
+    )
+
+# ── Row 2: Rate variables ───────────────────────────────────────────
+st.markdown("#### Rates & Targets")
+r_c1, r_c2, r_c3, r_c4 = st.columns(4)
+
+with r_c1:
+    st.number_input(
+        "WACC (Discount Rate)",
+        min_value=-0.99, max_value=1.0, step=0.005,
+        format="%.4f",
+        key="manual_wacc",
+        disabled=(_solving == "manual_wacc"),
+        on_change=run_valuation_solver,
+    )
+
+with r_c2:
+    st.number_input(
+        "Perpetual Growth (g)",
+        min_value=-0.50, max_value=0.50, step=0.005,
+        format="%.4f",
+        key="manual_g",
+        disabled=(_solving == "manual_g"),
+        on_change=run_valuation_solver,
+    )
+
+with r_c3:
+    st.number_input(
+        "Target PV",
+        step=10_000.0,
+        format="%.2f",
+        key="manual_target_pv",
+        disabled=(_solving == "manual_target_pv"),
+        on_change=run_valuation_solver,
+    )
+
+with r_c4:
+    st.number_input(
+        "Target NPV",
+        step=10_000.0,
+        format="%.2f",
+        key="manual_target_npv",
+        on_change=run_valuation_solver,
+        help="Usually 0 when solving for IRR.",
+    )
+
+# ── Row 3: CF0 & Terminal Value ──────────────────────────────────────
+st.markdown("#### Initial Outlay & Terminal Value")
+v_c1, v_c2 = st.columns(2)
+
+with v_c1:
+    st.number_input(
+        "Initial Outlay (CF₀)",
+        step=10_000.0,
+        format="%.2f",
+        key="manual_cf0",
+        disabled=(_solving == "manual_cf0"),
+        on_change=run_valuation_solver,
+        help="Cash outflow at t=0 (typically negative).",
+    )
+
+with v_c2:
+    st.number_input(
+        "Terminal Value (at end of period N)",
+        step=10_000.0,
+        format="%.2f",
+        key="manual_tv",
+        on_change=run_valuation_solver,
+        help="Lump-sum terminal value appended after the last period.",
+    )
+
+# ── Row 4: Discrete cash flows ──────────────────────────────────────
+st.markdown("#### Discrete Cash Flows (CF₁ … CFₙ)")
+
+_n = int(st.session_state["manual_n"])
+_cfs = st.session_state["manual_cfs"]
+
+# Ensure the list has exactly N entries for the current period count
+if len(_cfs) < _n:
+    _cfs.extend([0.0] * (_n - len(_cfs)))
+    st.session_state["manual_cfs"] = _cfs
+elif len(_cfs) > _n:
+    st.session_state["manual_cfs"] = _cfs[:_n]
+    _cfs = st.session_state["manual_cfs"]
+
+# Render CF inputs in rows of 5
+_cf_cols_per_row = 5
+for row_start in range(0, _n, _cf_cols_per_row):
+    row_end = min(row_start + _cf_cols_per_row, _n)
+    cols = st.columns(row_end - row_start)
+    for col_idx, period_idx in enumerate(range(row_start, row_end)):
+        with cols[col_idx]:
+
+            def _make_cf_callback(idx: int):
+                """Factory to capture idx by value (avoids late-binding bug)."""
+                def _cb():
+                    st.session_state["manual_cfs"][idx] = st.session_state[f"_cf_input_{idx}"]
+                    run_valuation_solver()
+                return _cb
+
+            st.number_input(
+                f"CF{period_idx + 1}",
+                value=float(_cfs[period_idx]),
+                step=10_000.0,
+                format="%.2f",
+                key=f"_cf_input_{period_idx}",
+                on_change=_make_cf_callback(period_idx),
+            )
 
 st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
 
