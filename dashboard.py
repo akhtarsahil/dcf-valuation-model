@@ -780,7 +780,7 @@ with tab_manual:
         "Implied Enterprise Value (PV)":  "manual_target_pv",
         "Initial Outlay (CF0)":           "manual_cf0",
         "Discount Rate (WACC)":           "manual_wacc",
-        "Perpetual Growth Rate (g)":      "manual_g",
+        "Terminal Growth Rate (g)":       "manual_g",
     }
     _SOLVE_LABELS = list(_SOLVE_OPTIONS.keys())
     _SOLVE_KEYS   = list(_SOLVE_OPTIONS.values())
@@ -915,12 +915,12 @@ with tab_manual:
 
     with r_c2:
         st.text_input(
-            "Perpetual Growth (g)",
+            "Terminal Growth Rate (g)",
             value=_fmt_rate(st.session_state["manual_g"]),
             key="_g_text",
             disabled=(_solving == "manual_g"),
             on_change=_on_g_text,
-            help="e.g. 2.5%, 0.025",
+            help="Also known as Perpetual Growth Rate (g). e.g. 2.5%, 0.025",
         )
 
     with r_c3:
