@@ -115,13 +115,13 @@ _MANUAL_DEFAULTS = {
     "manual_n":          5,
     "manual_m":          1,
     "manual_mid_year":   False,
-    "manual_cf0":        -1_000_000.0,
-    "manual_cfs":        [200_000.0, 250_000.0, 300_000.0, 350_000.0, 400_000.0],
-    "manual_tv":         500_000.0,
-    "manual_wacc":       0.10,
-    "manual_g":          0.025,
-    "manual_target_pv":  0.0,
-    "manual_target_npv": 0.0,
+    "manual_cf0":        None,
+    "manual_cfs":        [None] * 30,
+    "manual_tv":         None,
+    "manual_wacc":       None,
+    "manual_g":          None,
+    "manual_target_pv":  None,
+    "manual_target_npv": None,
     # Which variable the solver should solve for (the one set to None).
     # Must be one of: "manual_cf0", "manual_target_pv",
     #                 "manual_wacc", "manual_g".
@@ -146,45 +146,35 @@ for _key, _default in _MANUAL_DEFAULTS.items():
 import re as _re
 
 
-def _parse_rate(text: str) -> float:
-    """Parse a rate string into a decimal float.
-
-    Accepted formats:
-        '14%'    → 0.14
-        '14.5%'  → 0.145
-        '0.14'   → 0.14
-        '14'     → 0.14  (values > 1 are treated as percentages)
-        '-5%'    → -0.05
-    """
-    s = text.strip().replace(",", "")
+def _parse_rate(text: str | None) -> float | None:
+    """Parse a rate string into a decimal float, or None if blank."""
+    if text is None:
+        return None
+    s = str(text).strip().replace(",", "")
     if not s:
-        return 0.0
+        return None
     if s.endswith("%"):
-        return float(s[:-1]) / 100.0
-    val = float(s)
-    # Heuristic: if abs > 1, user almost certainly typed a percentage
+        try:
+            return float(s[:-1]) / 100.0
+        except ValueError:
+            return None
+    try:
+        val = float(s)
+    except ValueError:
+        return None
     if abs(val) > 1.0:
         return val / 100.0
     return val
 
 
-def _parse_currency(text: str) -> float:
-    """Parse a currency string into a raw float.
-
-    Accepted formats:
-        '$1,000,000'  → 1000000.0
-        '1,000,000'   → 1000000.0
-        '1M' / '1m'   → 1000000.0
-        '2.5B' / '2.5b' → 2500000000.0
-        '500K' / '500k' → 500000.0
-        '-$15,000'    → -15000.0
-        '15000'       → 15000.0
-    """
-    s = text.strip().replace(",", "").replace("$", "")
+def _parse_currency(text: str | None) -> float | None:
+    """Parse a currency string into a raw float, or None if blank."""
+    if text is None:
+        return None
+    s = str(text).strip().replace(",", "").replace("$", "")
     if not s:
-        return 0.0
+        return None
 
-    # Detect sign
     sign = 1.0
     if s.startswith("-"):
         sign = -1.0
@@ -192,7 +182,6 @@ def _parse_currency(text: str) -> float:
     elif s.startswith("+"):
         s = s[1:].strip()
 
-    # Detect suffix multipliers
     multiplier = 1.0
     if s and s[-1].upper() == "B":
         multiplier = 1e9
@@ -204,19 +193,33 @@ def _parse_currency(text: str) -> float:
         multiplier = 1e3
         s = s[:-1]
 
-    return sign * float(s) * multiplier
+    try:
+        return sign * float(s) * multiplier
+    except ValueError:
+        return None
 
 
-def _fmt_rate(val: float) -> str:
-    """Format a decimal rate for display in a text input.  e.g. 0.14 → '14.00%'"""
-    return f"{val * 100:.2f}%"
+def _fmt_rate(val: float | None) -> str:
+    """Format a decimal rate for display in a text input. e.g. 0.14 → '14.00%'"""
+    if val is None or val == "":
+        return ""
+    try:
+        return f"{float(val) * 100:.2f}%"
+    except (ValueError, TypeError):
+        return ""
 
 
-def _fmt_currency(val: float) -> str:
-    """Format a raw float for display in a text input.  e.g. 1000000 → '$1,000,000.00'"""
-    if val < 0:
-        return f"-${abs(val):,.2f}"
-    return f"${val:,.2f}"
+def _fmt_currency(val: float | None) -> str:
+    """Format a raw float for display in a text input. e.g. 1000000 → '$1,000,000.00'"""
+    if val is None or val == "":
+        return ""
+    try:
+        v = float(val)
+        if v < 0:
+            return f"-${abs(v):,.2f}"
+        return f"${v:,.2f}"
+    except (ValueError, TypeError):
+        return ""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -249,13 +252,37 @@ def run_valuation_solver() -> None:
         n   = int(st.session_state["manual_n"])
         m   = int(st.session_state["manual_m"])
         mid = bool(st.session_state["manual_mid_year"])
-        cf0 = float(st.session_state["manual_cf0"])
-        cfs = [float(v) for v in st.session_state["manual_cfs"][:n]]
-        tv  = float(st.session_state["manual_tv"])
-        w   = float(st.session_state["manual_wacc"])
-        g   = float(st.session_state["manual_g"])
-        tpv = float(st.session_state["manual_target_pv"])
-        npv = float(st.session_state["manual_target_npv"])
+        
+        cf0_raw = st.session_state.get("manual_cf0")
+        cf0 = float(cf0_raw) if cf0_raw is not None else 0.0
+
+        tv_raw = st.session_state.get("manual_tv")
+        tv = float(tv_raw) if tv_raw is not None else 0.0
+
+        w_raw = st.session_state.get("manual_wacc")
+        w = float(w_raw) if w_raw is not None else None
+
+        g_raw = st.session_state.get("manual_g")
+        g = float(g_raw) if g_raw is not None else None
+
+        tpv_raw = st.session_state.get("manual_target_pv")
+        tpv = float(tpv_raw) if tpv_raw is not None else 0.0
+
+        npv_raw = st.session_state.get("manual_target_npv")
+        npv = float(npv_raw) if npv_raw is not None else 0.0
+
+        cfs = []
+        for v in st.session_state.get("manual_cfs", [])[:n]:
+            cfs.append(float(v) if v is not None else 0.0)
+
+        # ── Pre-check: don't attempt solving if required inputs are blank ──
+        if solve_for in ("manual_target_pv", "manual_cf0") and w is None:
+            return
+        if solve_for == "manual_g" and (w is None or tv == 0.0):
+            return
+        if solve_for == "manual_wacc" and all(c == 0.0 for c in cfs) and cf0 == 0.0 and tv == 0.0:
+            return
+
         nd  = 0.0   # net_debt — currently not surfaced as an input
         so  = 1.0   # shares_outstanding — currently not surfaced
 
@@ -853,7 +880,6 @@ with tab_manual:
             "Projection Periods (N)",
             min_value=1, max_value=30, step=1,
             key="manual_n",
-            on_change=run_valuation_solver,
             help="Number of explicit cash flow periods.",
         )
     
@@ -862,7 +888,6 @@ with tab_manual:
             "Compounding Frequency (m)",
             min_value=1, max_value=365, step=1,
             key="manual_m",
-            on_change=run_valuation_solver,
             help="1 = annual, 2 = semi-annual, 12 = monthly.",
         )
     
@@ -870,7 +895,6 @@ with tab_manual:
         st.checkbox(
             "Mid-Year Convention",
             key="manual_mid_year",
-            on_change=run_valuation_solver,
             help="Discount to midpoint of each period instead of end.",
         )
     
@@ -880,66 +904,59 @@ with tab_manual:
     r_c1, r_c2, r_c3, r_c4 = st.columns(4)
 
     def _on_wacc_text():
-        try:
-            st.session_state["manual_wacc"] = _parse_rate(st.session_state["_wacc_text"])
-        except ValueError:
-            pass
-        run_valuation_solver()
+        val = _parse_rate(st.session_state.get("_wacc_text"))
+        st.session_state["manual_wacc"] = val
+        st.session_state["_wacc_text"] = _fmt_rate(val)
 
     def _on_g_text():
-        try:
-            st.session_state["manual_g"] = _parse_rate(st.session_state["_g_text"])
-        except ValueError:
-            pass
-        run_valuation_solver()
+        val = _parse_rate(st.session_state.get("_g_text"))
+        st.session_state["manual_g"] = val
+        st.session_state["_g_text"] = _fmt_rate(val)
 
     def _on_tpv_text():
-        try:
-            st.session_state["manual_target_pv"] = _parse_currency(st.session_state["_tpv_text"])
-        except ValueError:
-            pass
-        run_valuation_solver()
+        val = _parse_currency(st.session_state.get("_tpv_text"))
+        st.session_state["manual_target_pv"] = val
+        st.session_state["_tpv_text"] = _fmt_currency(val)
 
     def _on_tnpv_text():
-        try:
-            st.session_state["manual_target_npv"] = _parse_currency(st.session_state["_tnpv_text"])
-        except ValueError:
-            pass
-        run_valuation_solver()
+        val = _parse_currency(st.session_state.get("_tnpv_text"))
+        st.session_state["manual_target_npv"] = val
+        st.session_state["_tnpv_text"] = _fmt_currency(val)
 
     with r_c1:
         st.text_input(
             "WACC (Discount Rate)",
-            value=_fmt_rate(st.session_state["manual_wacc"]),
+            value=_fmt_rate(st.session_state.get("manual_wacc")),
             key="_wacc_text",
             disabled=(_solving == "manual_wacc"),
             on_change=_on_wacc_text,
-            help="e.g. 10%, 0.10",
+            help="e.g. 10%, 0.10, or just 10",
         )
 
     with r_c2:
         st.text_input(
             "Terminal Growth Rate (g)",
-            value=_fmt_rate(st.session_state["manual_g"]),
+            value=_fmt_rate(st.session_state.get("manual_g")),
             key="_g_text",
             disabled=(_solving == "manual_g"),
             on_change=_on_g_text,
-            help="Also known as Perpetual Growth Rate (g). e.g. 2.5%, 0.025",
+            help="Also known as Perpetual Growth Rate (g). e.g. 2.5%, 0.025, or 2.5",
         )
 
     with r_c3:
         st.text_input(
             "Target PV",
-            value=_fmt_currency(st.session_state["manual_target_pv"]),
+            value=_fmt_currency(st.session_state.get("manual_target_pv")),
             key="_tpv_text",
             disabled=(_solving == "manual_target_pv"),
             on_change=_on_tpv_text,
+            help="e.g. $1,000,000, 1M, or 100",
         )
 
     with r_c4:
         st.text_input(
             "Target NPV",
-            value=_fmt_currency(st.session_state["manual_target_npv"]),
+            value=_fmt_currency(st.session_state.get("manual_target_npv")),
             key="_tnpv_text",
             on_change=_on_tnpv_text,
             help="Usually $0 when solving for IRR.",
@@ -950,36 +967,32 @@ with tab_manual:
     v_c1, v_c2 = st.columns(2)
 
     def _on_cf0_text():
-        try:
-            st.session_state["manual_cf0"] = _parse_currency(st.session_state["_cf0_text"])
-        except ValueError:
-            pass
-        run_valuation_solver()
+        val = _parse_currency(st.session_state.get("_cf0_text"))
+        st.session_state["manual_cf0"] = val
+        st.session_state["_cf0_text"] = _fmt_currency(val)
 
     def _on_tv_text():
-        try:
-            st.session_state["manual_tv"] = _parse_currency(st.session_state["_tv_text"])
-        except ValueError:
-            pass
-        run_valuation_solver()
+        val = _parse_currency(st.session_state.get("_tv_text"))
+        st.session_state["manual_tv"] = val
+        st.session_state["_tv_text"] = _fmt_currency(val)
 
     with v_c1:
         st.text_input(
             "Initial Outlay (CF₀)",
-            value=_fmt_currency(st.session_state["manual_cf0"]),
+            value=_fmt_currency(st.session_state.get("manual_cf0")),
             key="_cf0_text",
             disabled=(_solving == "manual_cf0"),
             on_change=_on_cf0_text,
-            help="e.g. -$1,000,000 or -1M",
+            help="e.g. -$1,000,000, -1M, or -500",
         )
 
     with v_c2:
         st.text_input(
             "Terminal Value (at end of period N)",
-            value=_fmt_currency(st.session_state["manual_tv"]),
+            value=_fmt_currency(st.session_state.get("manual_tv")),
             key="_tv_text",
             on_change=_on_tv_text,
-            help="e.g. $500K, 500000, 0.5M",
+            help="e.g. $500K, 500000, 0.5M, or 250",
         )
     
     # ── Row 4: Discrete cash flows ──────────────────────────────────────
@@ -988,9 +1001,9 @@ with tab_manual:
     _n = int(st.session_state["manual_n"])
     _cfs = st.session_state["manual_cfs"]
     
-    # Ensure the list has exactly N entries for the current period count
+    # Ensure the list has enough entries for N
     if len(_cfs) < _n:
-        _cfs.extend([0.0] * (_n - len(_cfs)))
+        _cfs.extend([None] * (_n - len(_cfs)))
         st.session_state["manual_cfs"] = _cfs
     elif len(_cfs) > _n:
         st.session_state["manual_cfs"] = _cfs[:_n]
@@ -1007,20 +1020,52 @@ with tab_manual:
                 def _make_cf_callback(idx: int):
                     """Factory to capture idx by value (avoids late-binding bug)."""
                     def _cb():
-                        try:
-                            parsed = _parse_currency(st.session_state[f"_cf_input_{idx}"])
-                            st.session_state["manual_cfs"][idx] = parsed
-                        except ValueError:
-                            pass
-                        run_valuation_solver()
+                        key = f"_cf_input_{idx}"
+                        val = _parse_currency(st.session_state.get(key))
+                        st.session_state["manual_cfs"][idx] = val
+                        st.session_state[key] = _fmt_currency(val)
                     return _cb
 
                 st.text_input(
                     f"CF{period_idx + 1}",
-                    value=_fmt_currency(float(_cfs[period_idx])),
+                    value=_fmt_currency(_cfs[period_idx]),
                     key=f"_cf_input_{period_idx}",
                     on_change=_make_cf_callback(period_idx),
                 )
+    
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+    
+    # ── Solve & Clear Buttons (Bottom) ───────────────────────────────────
+    st.markdown("### 🧮 Run Valuation")
+    
+    if _error:
+        st.error(f"Solver Error: {_error}")
+    elif _result:
+        st.markdown(
+            f"<div class='metric-card' style='margin-bottom:20px;'>"
+            f"<div class='value'>{_display_val}</div>"
+            f"<div class='label'>Solved: {_display_name}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    btn_col1, btn_col2 = st.columns([3, 1])
+    with btn_col1:
+        st.button(
+            "🚀 Solve Target Variable",
+            type="primary",
+            use_container_width=True,
+            on_click=run_valuation_solver,
+            help="Run calculations after all inputs are entered.",
+        )
+    with btn_col2:
+        st.button(
+            "🗑️ Clear All",
+            on_click=_on_clear_all,
+            use_container_width=True,
+            help="Wipe all fields blank.",
+            key="bottom_clear_btn",
+        )
     
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
     
