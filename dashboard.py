@@ -465,6 +465,12 @@ def _build_forecast_inputs(
 # ──────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    st.markdown(
+        "<p style='font-size:12px; font-weight:500; margin-bottom:-10px;'>"
+        "<a href='https://www.github.com/akhtarsahil' target='_blank' style='color:#3B82F6; text-decoration:none;'>"
+        "ShoreStar Solutions</a></p>",
+        unsafe_allow_html=True
+    )
     st.markdown("## DCF Valuation Model")
     st.markdown("---")
 
