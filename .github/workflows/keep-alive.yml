@@ -2,14 +2,22 @@ name: Keep Streamlit App Awake
 
 on:
   schedule:
-    # Runs at 12:00 UTC every 3 days
-    - cron: '0 12 */3 * *'
-  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+    # Runs every 8 hours
+    - cron: '0 */8 * * *'
+  workflow_dispatch:
 
 jobs:
-  ping:
+  keep-awake:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Ping Streamlit URL
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Push empty commit to reset Streamlit timer
         run: |
-          curl -sSf -o /dev/null -w "HTTP Status: %{http_code}\n" https://dcfvaluationmodel.streamlit.app/
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: automated ping to keep Streamlit awake"
+          git push
